@@ -5,7 +5,9 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -15,13 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCHEMA_VERSION = "1.0.0"
-SCHEMA_FILE = "schema/benchmark-result-v1.schema.json"
-ARTIFACT_TYPES = {
-    "run",
-    "engine-result",
-    "paired-comparison",
-    "aggregate-summary",
+SCHEMA_VERSION = "2.0.0"
+SCHEMA_FILE = "schema/benchmark-result-v2.schema.json"
+SCHEMA_FILES = {
+    "1.0.0": "schema/benchmark-result-v1.schema.json",
+    SCHEMA_VERSION: SCHEMA_FILE,
 }
 RUNTIME_PATHS = {
     "footer-count",
@@ -46,6 +46,195 @@ MIN_PUBLISHABLE_PAIRS = 3
 
 class SchemaValidationError(ValueError):
     """Reports a machine-readable artifact contract violation."""
+
+
+def schema_path_for(version):
+    """Return the immutable schema file for one supported contract version."""
+    relative_path = SCHEMA_FILES.get(version)
+    if relative_path is None:
+        supported = ", ".join(sorted(SCHEMA_FILES))
+        raise SchemaValidationError(
+            f"$.schema_version {version!r} is unsupported; supported: {supported}"
+        )
+    return Path(__file__).resolve().parent / relative_path
+
+
+def json_type_matches(value, expected):
+    """Return whether a value has one JSON Schema primitive type."""
+    checks = {
+        "null": lambda candidate: candidate is None,
+        "object": lambda candidate: isinstance(candidate, dict),
+        "array": lambda candidate: isinstance(candidate, list),
+        "string": lambda candidate: isinstance(candidate, str),
+        "boolean": lambda candidate: isinstance(candidate, bool),
+        "integer": lambda candidate: (
+            isinstance(candidate, int) and not isinstance(candidate, bool)
+        ),
+        "number": lambda candidate: (
+            isinstance(candidate, (int, float))
+            and not isinstance(candidate, bool)
+        ),
+    }
+    return expected in checks and checks[expected](value)
+
+
+def resolve_schema_ref(root_schema, reference):
+    """Resolve one local JSON Pointer reference within a schema."""
+    if not reference.startswith("#/"):
+        raise SchemaValidationError(
+            f"unsupported non-local schema reference: {reference}"
+        )
+    value = root_schema
+    for token in reference[2:].split("/"):
+        key = token.replace("~1", "/").replace("~0", "~")
+        value = value[key]
+    return value
+
+
+def validate_schema_value(value, schema, root_schema, location="$"):
+    """Validate a JSON value with the contract's Draft 2020-12 keywords."""
+    if "$ref" in schema:
+        validate_schema_value(
+            value,
+            resolve_schema_ref(root_schema, schema["$ref"]),
+            root_schema,
+            location,
+        )
+    for child in schema.get("allOf", []):
+        validate_schema_value(value, child, root_schema, location)
+    if "oneOf" in schema:
+        matches = 0
+        errors = []
+        for child in schema["oneOf"]:
+            try:
+                validate_schema_value(value, child, root_schema, location)
+                matches += 1
+            except SchemaValidationError as error:
+                errors.append(str(error))
+        if matches != 1:
+            detail = errors[0] if errors else f"{location} matched multiple schemas"
+            raise SchemaValidationError(
+                f"{location} must match exactly one schema: {detail}"
+            )
+
+    if "const" in schema and value != schema["const"]:
+        raise SchemaValidationError(
+            f"{location} must equal {schema['const']!r}, got {value!r}"
+        )
+    if "enum" in schema and value not in schema["enum"]:
+        raise SchemaValidationError(
+            f"{location} must be one of {schema['enum']!r}, got {value!r}"
+        )
+
+    expected_types = schema.get("type")
+    if expected_types is not None:
+        if isinstance(expected_types, str):
+            expected_types = [expected_types]
+        if not any(json_type_matches(value, expected) for expected in expected_types):
+            raise SchemaValidationError(
+                f"{location} must have type {' or '.join(expected_types)}"
+            )
+
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value:
+                raise SchemaValidationError(f"{location}.{key} is required")
+        properties = schema.get("properties", {})
+        for key, child_value in value.items():
+            child_location = f"{location}.{key}"
+            if key in properties:
+                validate_schema_value(
+                    child_value,
+                    properties[key],
+                    root_schema,
+                    child_location,
+                )
+                continue
+            additional = schema.get("additionalProperties", True)
+            if additional is False:
+                raise SchemaValidationError(
+                    f"{child_location} is not allowed by the schema"
+                )
+            if isinstance(additional, dict):
+                validate_schema_value(
+                    child_value, additional, root_schema, child_location
+                )
+
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            raise SchemaValidationError(
+                f"{location} must contain at least {schema['minItems']} items"
+            )
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            raise SchemaValidationError(
+                f"{location} must contain at most {schema['maxItems']} items"
+            )
+        if schema.get("uniqueItems") and len(
+            {json.dumps(item, sort_keys=True) for item in value}
+        ) != len(value):
+            raise SchemaValidationError(f"{location} must contain unique items")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, child_value in enumerate(value):
+                validate_schema_value(
+                    child_value,
+                    item_schema,
+                    root_schema,
+                    f"{location}[{index}]",
+                )
+
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0):
+            raise SchemaValidationError(
+                f"{location} must contain at least {schema['minLength']} characters"
+            )
+        pattern = schema.get("pattern")
+        if pattern and re.search(pattern, value) is None:
+            raise SchemaValidationError(
+                f"{location} must match pattern {pattern!r}"
+            )
+        if schema.get("format") == "date-time":
+            try:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise SchemaValidationError(
+                    f"{location} must be an ISO-8601 date-time"
+                ) from error
+
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and "minimum" in schema
+        and value < schema["minimum"]
+    ):
+        raise SchemaValidationError(
+            f"{location} must be at least {schema['minimum']}"
+        )
+
+
+def validate_against_versioned_schema(artifact):
+    """Validate an artifact against its declared immutable JSON Schema."""
+    if not isinstance(artifact, dict) or "schema_version" not in artifact:
+        raise SchemaValidationError("$.schema_version is required")
+    path = schema_path_for(artifact["schema_version"])
+    schema = read_json(path)
+    artifact_type = artifact.get("artifact_type")
+    definition_names = {
+        "run": "runArtifact",
+        "engine-result": "engineArtifact",
+        "paired-comparison": "pairedArtifact",
+        "aggregate-summary": "aggregateArtifact",
+    }
+    definition_name = definition_names.get(artifact_type)
+    if definition_name is None:
+        raise SchemaValidationError(
+            f"$.artifact_type is unsupported: {artifact_type!r}"
+        )
+    validate_schema_value(
+        artifact,
+        schema["$defs"][definition_name],
+        schema,
+    )
 
 
 def utc_now():
@@ -137,13 +326,13 @@ def command_output(command, cwd):
 
 
 def pom_versions(repo_root):
-    """Read pinned runtime versions from the Maven project."""
+    """Read pinned server and Spark dependency versions from Maven."""
     pom = ET.parse(repo_root / "pom.xml").getroot()
     namespace = {"m": "http://maven.apache.org/POM/4.0.0"}
     properties = pom.find("m:properties", namespace)
     wanted = {
         "arrow.version": "arrow_flight",
-        "duckdb.version": "duckdb",
+        "duckdb.version": "duckdb_jdbc",
         "grpc.version": "grpc",
         "hadoop.version": "hadoop",
         "hazelcast.version": "hazelcast",
@@ -155,9 +344,100 @@ def pom_versions(repo_root):
             key = child.tag.rsplit("}", 1)[-1]
             if key in wanted:
                 versions[wanted[key]] = (child.text or "").strip()
-    versions["jvm"] = command_output(["java", "-version"], repo_root).splitlines()[0]
-    versions["python"] = platform.python_version()
     return versions
+
+
+def docker_image_id(image_ref, repo_root):
+    """Return the local content-addressed ID for one runtime image."""
+    if not image_ref:
+        return "unknown"
+    return command_output(
+        ["docker", "image", "inspect", "--format={{.Id}}", image_ref],
+        repo_root,
+    ).splitlines()[0]
+
+
+def runtime_dependencies(repo_root):
+    """Capture declared versions and locally resolved runtime image IDs."""
+    benchbase_ref = os.environ.get(
+        "BENCHBASE_IMAGE", "benchbase.azurecr.io/benchbase:latest"
+    )
+    generator_ref = os.environ.get(
+        "BENCHMARK_GENERATOR_IMAGE",
+        "arrowflight-duckdb-benchmark-generator:latest",
+    )
+    return {
+        "maven": pom_versions(repo_root),
+        "arrowflight": {
+            "image_ref": "arrowflight-test:latest",
+            "image_id": docker_image_id("arrowflight-test:latest", repo_root),
+        },
+        "benchbase": {
+            "image_ref": benchbase_ref,
+            "image_id": docker_image_id(benchbase_ref, repo_root),
+        },
+        "generator": {
+            "image_ref": generator_ref,
+            "image_id": docker_image_id(generator_ref, repo_root),
+            "duckdb_python": "1.4.1",
+        },
+        "hive_jdbc": "2.3.9",
+        "jvm": command_output(
+            ["java", "-version"], repo_root
+        ).splitlines()[0],
+        "python": platform.python_version(),
+        "docker": command_output(["docker", "--version"], repo_root),
+        "docker_compose": command_output(
+            ["docker", "compose", "version"], repo_root
+        ),
+    }
+
+
+def refreshed_runtime_dependencies(captured, repo_root):
+    """Resolve the image IDs that were actually present after container builds."""
+    dependencies = json.loads(json.dumps(captured))
+    for key in ("arrowflight", "benchbase", "generator"):
+        image = dependencies.get(key, {})
+        resolved = docker_image_id(image.get("image_ref"), repo_root)
+        if resolved != "unknown":
+            image["image_id"] = resolved
+    return dependencies
+
+
+def runtime_configuration(args):
+    """Build explicit Spark, Hadoop, JVM, Flight, and DuckDB settings."""
+    return {
+        "spark": {
+            "master_url": args.spark_master_url,
+            "sql_ansi_enabled": args.spark_sql_ansi_enabled,
+            "direct_parquet_partitions": args.direct_parquet_partitions,
+            "thrift_server": args.spark_thrift_server,
+        },
+        "hadoop": {
+            "data_dir": args.hdfs_data_dir,
+            "benchmark_path": args.hdfs_benchmark_path,
+            "block_size_bytes": args.hdfs_block_size_bytes,
+            "replication": args.hdfs_replication,
+        },
+        "jvm": {
+            "java_opts": args.java_opts,
+        },
+        "flight": {
+            "source_host": args.flight_source_host,
+            "source_port": args.flight_source_port,
+            "batch_size": args.flight_batch_size,
+            "duckdb_threads": args.flight_duckdb_threads,
+            "timing_log_level": args.flight_timing_log_level,
+            "log_level": args.flight_log_level,
+        },
+        "duckdb": {
+            "threads": args.flight_duckdb_threads,
+            "generator_image": os.environ.get(
+                "BENCHMARK_GENERATOR_IMAGE",
+                "arrowflight-duckdb-benchmark-generator:latest",
+            ),
+        },
+    }
 
 
 def source_state(repo_root):
@@ -182,6 +462,14 @@ def initialize_context(args):
 
     repo_root = args.repo_root.resolve()
     compose = repo_root / "docker-compose.yml"
+    benchmark_dir = repo_root / "benchmarks" / "benchbase-spark"
+    input_files = {
+        "docker_compose": compose,
+        "runtime_dockerfile": repo_root / "docker" / "Dockerfile",
+        "benchbase_dockerfile": benchmark_dir / "Dockerfile",
+        "generator_dockerfile": benchmark_dir / "duckdb-generator.Dockerfile",
+        "benchmark_config": benchmark_dir / "config" / f"{args.benchmark}.xml",
+    }
     schedule = paired_schedule(args.paired_observations, args.engine_order)
     context = {
         "schema_version": SCHEMA_VERSION,
@@ -206,7 +494,8 @@ def initialize_context(args):
             "starting_engine_order": normalize_engine_order(args.engine_order),
             "engine_order_schedule": schedule,
         },
-        "runtime_dependencies": pom_versions(repo_root),
+        "runtime_dependencies": runtime_dependencies(repo_root),
+        "configuration": runtime_configuration(args),
         "topology": {
             "cluster_nodes": args.cluster_nodes,
             "flight_hosts": args.flight_hosts.split(",") if args.flight_hosts else [],
@@ -220,7 +509,11 @@ def initialize_context(args):
             "schema_version": SCHEMA_VERSION,
         },
         "inputs": {
-            "docker_compose_sha256": sha256_file(compose) if compose.exists() else None,
+            name: {
+                "path": path.relative_to(repo_root).as_posix(),
+                "sha256": sha256_file(path) if path.exists() else None,
+            }
+            for name, path in input_files.items()
         },
     }
     write_json(context_path, context)
@@ -319,42 +612,27 @@ def required(value, keys, location):
 
 def validate_artifact(artifact):
     """Validate the supported schema version and required artifact fields."""
-    required(artifact, ["schema_version", "artifact_type"], "$")
-    if artifact["schema_version"] != SCHEMA_VERSION:
-        raise SchemaValidationError(
-            f"$.schema_version must be {SCHEMA_VERSION}, "
-            f"got {artifact['schema_version']!r}"
-        )
+    validate_against_versioned_schema(artifact)
     artifact_type = artifact["artifact_type"]
-    if artifact_type not in ARTIFACT_TYPES:
-        raise SchemaValidationError(f"$.artifact_type is unsupported: {artifact_type}")
 
     if artifact_type == "run":
-        required(artifact, ["run"], "$")
         validate_run(artifact["run"], "$.run")
     elif artifact_type == "engine-result":
-        required(artifact, ["run_id", "observation_index", "engine"], "$")
         validate_engine(artifact["engine"], "$.engine")
     elif artifact_type == "aggregate-summary":
-        required(artifact, ["run_id", "summary", "raw_repetition_refs"], "$")
-        required(artifact["summary"], ["engines", "paired"], "$.summary")
+        pass
     else:
-        required(
-            artifact,
-            [
-                "run",
-                "dataset",
-                "queries",
-                "observations",
-                "comparison",
-                "aggregate_summary",
-                "validation",
-            ],
-            "$",
-        )
         validate_run(artifact["run"], "$.run")
-        if not artifact["observations"]:
-            raise SchemaValidationError("$.observations must not be empty")
+        if artifact["schema_version"] == SCHEMA_VERSION:
+            schema = read_json(schema_path_for(SCHEMA_VERSION))
+            manifest = artifact["dataset"]["manifest"]
+            if artifact["dataset"]["manifest_ref"]:
+                validate_schema_value(
+                    manifest,
+                    schema["$defs"]["manifest"],
+                    schema,
+                    "$.dataset.manifest",
+                )
         expected_observations = artifact["run"]["policy"][
             "paired_observations"
         ]
@@ -364,20 +642,38 @@ def validate_artifact(artifact):
             )
         for index, observation in enumerate(artifact["observations"]):
             validate_observation(observation, f"$.observations[{index}]")
-        required(
-            artifact["comparison"],
-            [
-                "engine_order_schedule",
-                "correctness",
-                "validity",
-                "publication",
-            ],
-            "$.comparison",
-        )
-        required(artifact["validation"], ["valid", "schema"], "$.validation")
         if artifact["validation"]["valid"] is not True:
             raise SchemaValidationError("$.validation.valid must be true")
+        expected_schema = SCHEMA_FILES[artifact["schema_version"]]
+        if artifact["validation"]["schema"] != expected_schema:
+            raise SchemaValidationError(
+                f"$.validation.schema must be {expected_schema!r}"
+            )
+        validate_schedule_consistency(artifact)
     return artifact
+
+
+def validate_schedule_consistency(artifact):
+    """Require observations to follow the run's deterministic order schedule."""
+    schedule = artifact["run"]["policy"]["engine_order_schedule"]
+    observations = artifact["observations"]
+    for offset, (scheduled, observation) in enumerate(
+        zip(schedule, observations), start=1
+    ):
+        if scheduled["observation_index"] != offset:
+            raise SchemaValidationError(
+                "$.run.policy.engine_order_schedule must use consecutive indices"
+            )
+        if observation["observation_index"] != scheduled["observation_index"]:
+            raise SchemaValidationError(
+                f"$.observations[{offset - 1}].observation_index "
+                "must match the schedule"
+            )
+        if observation["engine_order"] != scheduled["engine_order"]:
+            raise SchemaValidationError(
+                f"$.observations[{offset - 1}].engine_order "
+                "must match the schedule"
+            )
 
 
 def validate_run(run, location):
@@ -1241,6 +1537,120 @@ def dataset_contract(results):
     }
 
 
+def dependency_pin_reasons(dependencies):
+    """Return publication failures for unresolved runtime dependency pins."""
+    reasons = []
+    maven = dependencies.get("maven", {})
+    for name in (
+        "arrow_flight",
+        "duckdb_jdbc",
+        "grpc",
+        "hadoop",
+        "hazelcast",
+        "spark",
+    ):
+        if not maven.get(name) or maven.get(name) == "unknown":
+            reasons.append(f"runtime-dependency-unpinned: maven.{name}")
+    for name in ("arrowflight", "benchbase", "generator"):
+        image = dependencies.get(name, {})
+        image_id = str(image.get("image_id", ""))
+        if not image_id.startswith("sha256:"):
+            reasons.append(f"runtime-image-unresolved: {name}")
+    for name in ("hive_jdbc", "jvm", "python", "docker", "docker_compose"):
+        if not dependencies.get(name) or dependencies.get(name) == "unknown":
+            reasons.append(f"runtime-dependency-unpinned: {name}")
+    return reasons
+
+
+def reproducibility_reasons(run, dataset, queries, observations):
+    """Return reasons why a valid comparison is not independently reproducible."""
+    reasons = []
+    source = run["source"]
+    if not re.fullmatch(r"[0-9a-f]{40}", str(source.get("git_sha", ""))):
+        reasons.append("source-git-sha-unavailable")
+    if source.get("dirty"):
+        reasons.append("source-worktree-dirty")
+    if not dataset.get("manifest_ref") or not dataset.get("manifest_sha256"):
+        reasons.append("dataset-manifest-missing")
+    manifest = dataset.get("manifest", {})
+    if manifest:
+        if manifest.get("dataset") != run["benchmark"]:
+            reasons.append("dataset-benchmark-mismatch")
+        if number_or_none(manifest.get("scale_factor")) != number_or_none(
+            run["workload"]["scale_factor"]
+        ):
+            reasons.append("dataset-scale-factor-mismatch")
+        if manifest.get("cluster_nodes") != run["topology"]["cluster_nodes"]:
+            reasons.append("dataset-topology-mismatch")
+        if manifest.get("shared_parquet_dataset") is not True:
+            reasons.append("dataset-is-not-shared")
+    if not queries:
+        reasons.append("logical-query-contract-missing")
+    expected_evidence = {
+        (observation_index, engine_id)
+        for observation_index in range(
+            1, run["policy"]["paired_observations"] + 1
+        )
+        for engine_id in ENGINE_IDS
+    }
+    for query in queries:
+        query_id = query["logical_query_id"]
+        if not query.get("sql_ref"):
+            reasons.append(f"query-sql-missing: {query_id}")
+        plan_evidence = {
+            (item.get("observation_index"), item.get("engine"))
+            for item in query.get("physical_plan_refs", [])
+        }
+        if plan_evidence != expected_evidence:
+            reasons.append(f"formatted-physical-plans-incomplete: {query_id}")
+        path_evidence = {
+            (item.get("observation_index"), item.get("engine"))
+            for item in query.get("execution_path_refs", [])
+        }
+        if path_evidence != expected_evidence:
+            reasons.append(f"execution-path-references-incomplete: {query_id}")
+    for observation in observations:
+        observation_index = observation["observation_index"]
+        for engine in observation["engines"]:
+            engine_id = engine["id"]
+            refs = engine["artifact_refs"]
+            for name in ("summary", "raw", "config", "metrics", "params"):
+                if not refs.get(name):
+                    reasons.append(
+                        f"raw-artifact-missing: observation-{observation_index} "
+                        f"{engine_id} {name}"
+                    )
+            if (
+                engine_id == "flight"
+                and not engine["execution_paths"].get("events")
+            ):
+                reasons.append(
+                    f"execution-path-evidence-missing: "
+                    f"observation-{observation_index}"
+                )
+    if run["topology"].get("host_resources") in {
+        None,
+        "",
+        "not-recorded",
+    }:
+        reasons.append("host-resources-not-recorded")
+    for name, input_digest in run.get("inputs", {}).items():
+        if not re.fullmatch(
+            r"[0-9a-f]{64}", str(input_digest.get("sha256", ""))
+        ):
+            reasons.append(f"benchmark-input-missing: {name}")
+    reasons.extend(dependency_pin_reasons(run["runtime_dependencies"]))
+    return reasons
+
+
+def number_or_none(value):
+    """Return a float for equality checks or null for non-numeric values."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_artifacts(args):
     """Build run, engine, aggregate, and paired artifacts and validate each."""
     results = args.results.resolve()
@@ -1272,6 +1682,10 @@ def build_artifacts(args):
         if observation["status"] != "completed"
         or not observation["validity"]["valid"]
     ]
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    dependencies = refreshed_runtime_dependencies(
+        context["runtime_dependencies"], repo_root
+    )
     run = {
         "id": context["run_id"],
         "benchmark": context["benchmark"],
@@ -1281,8 +1695,10 @@ def build_artifacts(args):
         "source": context["source"],
         "workload": context["workload"],
         "policy": context["policy"],
-        "runtime_dependencies": context["runtime_dependencies"],
+        "runtime_dependencies": dependencies,
+        "configuration": context["configuration"],
         "topology": context["topology"],
+        "inputs": context["inputs"],
         "status": "failed" if failed else "completed",
         "failure_reason": (
             "; ".join(
@@ -1359,6 +1775,12 @@ def build_artifacts(args):
         for observation in observations
         for reason in observation["validity"]["reasons"]
     )
+    dataset = dataset_contract(results)
+    queries = query_contract(metadata, results, observations)
+    publication_reasons.extend(
+        reproducibility_reasons(run, dataset, queries, observations)
+    )
+    publication_reasons = list(dict.fromkeys(publication_reasons))
     comparison = {
         "engine_order_schedule": [
             {
@@ -1402,8 +1824,8 @@ def build_artifacts(args):
         "schema_version": SCHEMA_VERSION,
         "artifact_type": "paired-comparison",
         "run": run,
-        "dataset": dataset_contract(results),
-        "queries": query_contract(metadata, results, observations),
+        "dataset": dataset,
+        "queries": queries,
         "observations": observations,
         "comparison": comparison,
         "aggregate_summary": aggregate,
@@ -1463,6 +1885,21 @@ def parse_args():
     init.add_argument("--flight-hosts", default="")
     init.add_argument("--flight-servers", default="")
     init.add_argument("--host-resources", default="not-recorded")
+    init.add_argument("--spark-master-url", default="spark://spark-master:7077")
+    init.add_argument("--spark-sql-ansi-enabled", default="true")
+    init.add_argument("--spark-thrift-server", default="spark-thrift-server:10000")
+    init.add_argument("--direct-parquet-partitions", type=int, required=True)
+    init.add_argument("--hdfs-data-dir", required=True)
+    init.add_argument("--hdfs-benchmark-path", required=True)
+    init.add_argument("--hdfs-block-size-bytes", type=int, required=True)
+    init.add_argument("--hdfs-replication", type=int, default=1)
+    init.add_argument("--java-opts", default="-Xmx2g")
+    init.add_argument("--flight-source-host", required=True)
+    init.add_argument("--flight-source-port", type=int, default=32010)
+    init.add_argument("--flight-batch-size", type=int, required=True)
+    init.add_argument("--flight-duckdb-threads", default="properties-default")
+    init.add_argument("--flight-timing-log-level", default="inherited")
+    init.add_argument("--flight-log-level", default="INFO")
     init.add_argument("--force", action="store_true")
 
     build = subparsers.add_parser("build", help="Build and validate final artifacts.")

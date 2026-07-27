@@ -1,0 +1,1883 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nsu-fit.github.io/ArrowFlight/schemas/benchmark-result-v2.schema.json",
+  "title": "ArrowFlight benchmark result artifacts v2",
+  "description": "Strict version 2 contract for run, engine result, paired comparison, and aggregate summary artifacts.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/runArtifact"
+    },
+    {
+      "$ref": "#/$defs/engineArtifact"
+    },
+    {
+      "$ref": "#/$defs/pairedArtifact"
+    },
+    {
+      "$ref": "#/$defs/aggregateArtifact"
+    }
+  ],
+  "$defs": {
+    "header": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "artifact_type"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "2.0.0"
+        },
+        "artifact_type": {
+          "enum": [
+            "run",
+            "engine-result",
+            "paired-comparison",
+            "aggregate-summary"
+          ]
+        }
+      }
+    },
+    "nullableNumber": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "mean",
+        "median",
+        "minimum",
+        "maximum",
+        "spread",
+        "p25",
+        "p75",
+        "iqr",
+        "p95"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mean": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "median": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "minimum": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "maximum": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "spread": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p25": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p75": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "iqr": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p95": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valid",
+        "reasons"
+      ],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "publishable",
+            "not-publishable"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "pushdown_evidence": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_sha",
+        "dirty",
+        "dirty_files"
+      ],
+      "properties": {
+        "git_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "dirty_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "engineOrder": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "flight",
+          "direct"
+        ]
+      }
+    },
+    "scheduledOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "engine_order"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engine_order": {
+          "$ref": "#/$defs/engineOrder"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "warmup_seconds",
+        "measurement_seconds",
+        "cache_policy",
+        "repetitions",
+        "paired_observations",
+        "minimum_publishable_pairs",
+        "terminals",
+        "rate",
+        "starting_engine_order",
+        "engine_order_schedule"
+      ],
+      "properties": {
+        "warmup_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measurement_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "cache_policy": {
+          "const": "warm-cache"
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "paired_observations": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_publishable_pairs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "terminals": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "starting_engine_order": {
+          "$ref": "#/$defs/engineOrder"
+        },
+        "engine_order_schedule": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/scheduledOrder"
+          }
+        }
+      }
+    },
+    "imagePin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_ref",
+        "image_id"
+      ],
+      "properties": {
+        "image_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duckdb_python": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "runtimeDependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maven",
+        "arrowflight",
+        "benchbase",
+        "generator",
+        "hive_jdbc",
+        "jvm",
+        "python",
+        "docker",
+        "docker_compose"
+      ],
+      "properties": {
+        "maven": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "arrow_flight",
+            "duckdb_jdbc",
+            "grpc",
+            "hadoop",
+            "hazelcast",
+            "spark"
+          ],
+          "properties": {
+            "arrow_flight": {
+              "type": "string",
+              "minLength": 1
+            },
+            "duckdb_jdbc": {
+              "type": "string",
+              "minLength": 1
+            },
+            "grpc": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hadoop": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hazelcast": {
+              "type": "string",
+              "minLength": 1
+            },
+            "spark": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "arrowflight": {
+          "$ref": "#/$defs/imagePin"
+        },
+        "benchbase": {
+          "$ref": "#/$defs/imagePin"
+        },
+        "generator": {
+          "$ref": "#/$defs/imagePin"
+        },
+        "hive_jdbc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jvm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "python": {
+          "type": "string",
+          "minLength": 1
+        },
+        "docker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "docker_compose": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spark",
+        "hadoop",
+        "jvm",
+        "flight",
+        "duckdb"
+      ],
+      "properties": {
+        "spark": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "master_url",
+            "sql_ansi_enabled",
+            "direct_parquet_partitions",
+            "thrift_server"
+          ],
+          "properties": {
+            "master_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sql_ansi_enabled": {
+              "type": "string",
+              "minLength": 1
+            },
+            "direct_parquet_partitions": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "thrift_server": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "hadoop": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "data_dir",
+            "benchmark_path",
+            "block_size_bytes",
+            "replication"
+          ],
+          "properties": {
+            "data_dir": {
+              "type": "string",
+              "minLength": 1
+            },
+            "benchmark_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "block_size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "replication": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "jvm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "java_opts"
+          ],
+          "properties": {
+            "java_opts": {
+              "type": "string"
+            }
+          }
+        },
+        "flight": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_host",
+            "source_port",
+            "batch_size",
+            "duckdb_threads",
+            "timing_log_level",
+            "log_level"
+          ],
+          "properties": {
+            "source_host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_port": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "batch_size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "duckdb_threads": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timing_log_level": {
+              "type": "string",
+              "minLength": 1
+            },
+            "log_level": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "duckdb": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "threads",
+            "generator_image"
+          ],
+          "properties": {
+            "threads": {
+              "type": "string",
+              "minLength": 1
+            },
+            "generator_image": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cluster_nodes",
+        "flight_hosts",
+        "flight_servers",
+        "host_resources"
+      ],
+      "properties": {
+        "cluster_nodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "flight_hosts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "flight_servers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "host_resources": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "inputDigest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "docker_compose",
+        "runtime_dockerfile",
+        "benchbase_dockerfile",
+        "generator_dockerfile",
+        "benchmark_config"
+      ],
+      "properties": {
+        "docker_compose": {
+          "$ref": "#/$defs/inputDigest"
+        },
+        "runtime_dockerfile": {
+          "$ref": "#/$defs/inputDigest"
+        },
+        "benchbase_dockerfile": {
+          "$ref": "#/$defs/inputDigest"
+        },
+        "generator_dockerfile": {
+          "$ref": "#/$defs/inputDigest"
+        },
+        "benchmark_config": {
+          "$ref": "#/$defs/inputDigest"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "benchmark",
+        "mode",
+        "started_at",
+        "finished_at",
+        "source",
+        "workload",
+        "policy",
+        "runtime_dependencies",
+        "configuration",
+        "topology",
+        "inputs",
+        "status",
+        "failure_reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "benchmark": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "query_set",
+            "scale_factor"
+          ],
+          "properties": {
+            "query_set": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scale_factor": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "policy": {
+          "$ref": "#/$defs/policy"
+        },
+        "runtime_dependencies": {
+          "$ref": "#/$defs/runtimeDependencies"
+        },
+        "configuration": {
+          "$ref": "#/$defs/configuration"
+        },
+        "topology": {
+          "$ref": "#/$defs/topology"
+        },
+        "inputs": {
+          "$ref": "#/$defs/inputs"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "failure_reason": {
+          "$ref": "#/$defs/nullableString"
+        }
+      }
+    },
+    "rawMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "logical_query_id",
+        "repetition_index",
+        "start_time_microseconds",
+        "latency_microseconds",
+        "worker_id",
+        "phase_id"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "logical_query_id": {
+          "type": "string",
+          "pattern": "^q[0-9]+$"
+        },
+        "repetition_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_time_microseconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latency_microseconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "worker_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase_id": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "artifactRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "raw",
+        "config",
+        "metrics",
+        "params",
+        "report"
+      ],
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "raw": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "config": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "metrics": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "params": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "report": {
+          "$ref": "#/$defs/nullableString"
+        }
+      }
+    },
+    "correctnessQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_query_id",
+        "status",
+        "failure_reason",
+        "actual_ref"
+      ],
+      "properties": {
+        "logical_query_id": {
+          "type": "string",
+          "pattern": "^q[0-9]+$"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "not-captured"
+          ]
+        },
+        "failure_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "actual_ref": {
+          "$ref": "#/$defs/nullableString"
+        }
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "queries"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "not-captured"
+          ]
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/correctnessQuery"
+          }
+        }
+      }
+    },
+    "executionPath": {
+      "enum": [
+        "footer-count",
+        "footer-stats",
+        "duckdb-scan",
+        "duckdb-aggregation",
+        "duckdb-join",
+        "distributed",
+        "mixed",
+        "fallback",
+        "unknown"
+      ]
+    },
+    "executionEvent": {
+      "type": "object",
+      "required": [
+        "node",
+        "execution_path",
+        "pushdown_evidence",
+        "success",
+        "logical_query_id",
+        "repetition_index",
+        "observation_index"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_path": {
+          "$ref": "#/$defs/executionPath"
+        },
+        "pushdown_evidence": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "logical_query_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repetition_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "observation_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
+    "executionPaths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "uniform_path",
+        "pushdown_evidence",
+        "reason",
+        "nodes",
+        "events"
+      ],
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/executionPath"
+        },
+        "uniform_path": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/executionPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pushdown_evidence": {
+          "type": "boolean"
+        },
+        "reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "paths"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1
+              },
+              "paths": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/executionEvent"
+          }
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order_index",
+        "status",
+        "failure_reason",
+        "summary",
+        "raw_measurements",
+        "artifact_refs",
+        "correctness",
+        "physical_plan_refs",
+        "execution_paths",
+        "validity",
+        "publication"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "flight",
+            "direct"
+          ]
+        },
+        "order_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "failure_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "summary": {
+          "type": "object"
+        },
+        "raw_measurements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rawMeasurement"
+          }
+        },
+        "artifact_refs": {
+          "$ref": "#/$defs/artifactRefs"
+        },
+        "correctness": {
+          "$ref": "#/$defs/correctness"
+        },
+        "physical_plan_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "execution_paths": {
+          "$ref": "#/$defs/executionPaths"
+        },
+        "validity": {
+          "$ref": "#/$defs/validity"
+        },
+        "publication": {
+          "$ref": "#/$defs/publication"
+        }
+      }
+    },
+    "queryMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "mean",
+        "median",
+        "minimum",
+        "maximum",
+        "spread",
+        "p25",
+        "p75",
+        "iqr",
+        "p95",
+        "throughput_requests_per_second"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mean": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "median": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "minimum": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "maximum": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "spread": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p25": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p75": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "iqr": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p95": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "throughput_requests_per_second": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "engineMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "samples",
+        "latency_microseconds",
+        "throughput_requests_per_second",
+        "queries"
+      ],
+      "properties": {
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latency_microseconds": {
+          "$ref": "#/$defs/distribution"
+        },
+        "throughput_requests_per_second": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "queries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/queryMetrics"
+          }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine",
+        "exit_code",
+        "reason"
+      ],
+      "properties": {
+        "engine": {
+          "enum": [
+            "flight",
+            "direct"
+          ]
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "engine_order",
+        "cache_policy",
+        "warmup_seconds",
+        "repetitions",
+        "started_at",
+        "finished_at",
+        "status",
+        "failures",
+        "engines",
+        "metrics",
+        "validity"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engine_order": {
+          "$ref": "#/$defs/engineOrder"
+        },
+        "cache_policy": {
+          "const": "warm-cache"
+        },
+        "warmup_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "partial-failure",
+            "failed"
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/failure"
+          }
+        },
+        "engines": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/engine"
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "flight",
+            "direct"
+          ],
+          "properties": {
+            "flight": {
+              "$ref": "#/$defs/engineMetrics"
+            },
+            "direct": {
+              "$ref": "#/$defs/engineMetrics"
+            }
+          }
+        },
+        "validity": {
+          "$ref": "#/$defs/validity"
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "dataset",
+        "schema",
+        "scale_factor",
+        "storage",
+        "hdfs_data_dir",
+        "hdfs_replication",
+        "hdfs_block_size_bytes",
+        "shared_parquet_dataset",
+        "cluster_nodes",
+        "reference_queries"
+      ],
+      "properties": {
+        "dataset": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scale_factor": {
+          "type": "number",
+          "minimum": 0
+        },
+        "storage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hdfs_data_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hdfs_replication": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hdfs_block_size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shared_parquet_dataset": {
+          "type": "boolean"
+        },
+        "cluster_nodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reference_queries": {
+          "type": "array"
+        }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_ref",
+        "manifest_sha256",
+        "manifest"
+      ],
+      "properties": {
+        "manifest_ref": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "manifest_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "manifest": {
+          "type": "object"
+        }
+      }
+    },
+    "planRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "engine",
+        "path"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engine": {
+          "enum": [
+            "flight",
+            "direct"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "executionPathRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "engine",
+        "classification",
+        "uniform_path",
+        "pushdown_evidence",
+        "event_indexes"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engine": {
+          "enum": [
+            "flight",
+            "direct"
+          ]
+        },
+        "classification": {
+          "$ref": "#/$defs/executionPath"
+        },
+        "uniform_path": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/executionPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pushdown_evidence": {
+          "type": "boolean"
+        },
+        "event_indexes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_query_id",
+        "name",
+        "digest",
+        "sql_ref",
+        "physical_plan_refs",
+        "execution_path_refs"
+      ],
+      "properties": {
+        "logical_query_id": {
+          "type": "string",
+          "pattern": "^q[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sql_ref": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "physical_plan_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/planRef"
+          }
+        },
+        "execution_path_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/executionPathRef"
+          }
+        }
+      }
+    },
+    "engineObservationValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "order_index",
+        "status",
+        "valid",
+        "failure_reason",
+        "samples",
+        "median_latency_microseconds",
+        "p95_latency_microseconds",
+        "minimum_latency_microseconds",
+        "maximum_latency_microseconds",
+        "throughput_requests_per_second"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "order_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ]
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "failure_reason": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "median_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "p95_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "minimum_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "maximum_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "throughput_requests_per_second": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "queryAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_median_latency_microseconds",
+        "throughput_requests_per_second"
+      ],
+      "properties": {
+        "observation_median_latency_microseconds": {
+          "$ref": "#/$defs/distribution"
+        },
+        "throughput_requests_per_second": {
+          "$ref": "#/$defs/distribution"
+        }
+      }
+    },
+    "engineAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheduled_observations",
+        "successful_observations",
+        "total_samples",
+        "observation_values",
+        "latency_microseconds",
+        "p95_latency_microseconds",
+        "throughput_requests_per_second",
+        "queries"
+      ],
+      "properties": {
+        "scheduled_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "successful_observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observation_values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/engineObservationValue"
+          }
+        },
+        "latency_microseconds": {
+          "$ref": "#/$defs/distribution"
+        },
+        "p95_latency_microseconds": {
+          "$ref": "#/$defs/distribution"
+        },
+        "throughput_requests_per_second": {
+          "$ref": "#/$defs/distribution"
+        },
+        "queries": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/queryAggregate"
+          }
+        }
+      }
+    },
+    "pairObservationValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "engine_order",
+        "complete",
+        "flight_to_direct_median_latency_ratio",
+        "flight_minus_direct_median_latency_microseconds"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "engine_order": {
+          "$ref": "#/$defs/engineOrder"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "flight_to_direct_median_latency_ratio": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "flight_minus_direct_median_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "pairedQueryValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_index",
+        "complete",
+        "flight_to_direct_median_latency_ratio",
+        "flight_minus_direct_median_latency_microseconds"
+      ],
+      "properties": {
+        "observation_index": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "flight_to_direct_median_latency_ratio": {
+          "$ref": "#/$defs/nullableNumber"
+        },
+        "flight_minus_direct_median_latency_microseconds": {
+          "$ref": "#/$defs/nullableNumber"
+        }
+      }
+    },
+    "pairedQueryAggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation_values",
+        "flight_to_direct_median_latency_ratio",
+        "flight_minus_direct_median_latency_microseconds"
+      ],
+      "properties": {
+        "observation_values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pairedQueryValue"
+          }
+        },
+        "flight_to_direct_median_latency_ratio": {
+          "$ref": "#/$defs/distribution"
+        },
+        "flight_minus_direct_median_latency_microseconds": {
+          "$ref": "#/$defs/distribution"
+        }
+      }
+    },
+    "aggregateSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engines",
+        "paired"
+      ],
+      "properties": {
+        "engines": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "flight",
+            "direct"
+          ],
+          "properties": {
+            "flight": {
+              "$ref": "#/$defs/engineAggregate"
+            },
+            "direct": {
+              "$ref": "#/$defs/engineAggregate"
+            }
+          }
+        },
+        "paired": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheduled_pairs",
+            "complete_pairs",
+            "observation_values",
+            "flight_to_direct_median_latency_ratio",
+            "flight_minus_direct_median_latency_microseconds",
+            "queries"
+          ],
+          "properties": {
+            "scheduled_pairs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "complete_pairs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "observation_values": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pairObservationValue"
+              }
+            },
+            "flight_to_direct_median_latency_ratio": {
+              "$ref": "#/$defs/distribution"
+            },
+            "flight_minus_direct_median_latency_microseconds": {
+              "$ref": "#/$defs/distribution"
+            },
+            "queries": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/pairedQueryAggregate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine_order_schedule",
+        "correctness",
+        "validity",
+        "publication"
+      ],
+      "properties": {
+        "engine_order_schedule": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/scheduledOrder"
+          }
+        },
+        "correctness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "observation_outcomes"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "pass",
+                "fail",
+                "not-captured"
+              ]
+            },
+            "observation_outcomes": {
+              "type": "array"
+            }
+          }
+        },
+        "validity": {
+          "$ref": "#/$defs/validity"
+        },
+        "publication": {
+          "$ref": "#/$defs/publication"
+        }
+      }
+    },
+    "runArtifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/header"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "run"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2.0.0"
+            },
+            "artifact_type": {
+              "const": "run"
+            },
+            "run": {
+              "$ref": "#/$defs/run"
+            }
+          }
+        }
+      ]
+    },
+    "engineArtifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/header"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "run_id",
+            "observation_index",
+            "engine"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2.0.0"
+            },
+            "artifact_type": {
+              "const": "engine-result"
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observation_index": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "engine": {
+              "$ref": "#/$defs/engine"
+            }
+          }
+        }
+      ]
+    },
+    "aggregateArtifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/header"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "run_id",
+            "summary",
+            "raw_repetition_refs"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2.0.0"
+            },
+            "artifact_type": {
+              "const": "aggregate-summary"
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "summary": {
+              "$ref": "#/$defs/aggregateSummary"
+            },
+            "raw_repetition_refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pairedArtifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/header"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "artifact_type",
+            "run",
+            "dataset",
+            "queries",
+            "observations",
+            "comparison",
+            "aggregate_summary",
+            "validation"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": "2.0.0"
+            },
+            "artifact_type": {
+              "const": "paired-comparison"
+            },
+            "run": {
+              "$ref": "#/$defs/run"
+            },
+            "dataset": {
+              "$ref": "#/$defs/dataset"
+            },
+            "queries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/query"
+              }
+            },
+            "observations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/observation"
+              }
+            },
+            "comparison": {
+              "$ref": "#/$defs/comparison"
+            },
+            "aggregate_summary": {
+              "$ref": "#/$defs/aggregateSummary"
+            },
+            "validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "valid",
+                "schema"
+              ],
+              "properties": {
+                "valid": {
+                  "const": true
+                },
+                "schema": {
+                  "const": "schema/benchmark-result-v2.schema.json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

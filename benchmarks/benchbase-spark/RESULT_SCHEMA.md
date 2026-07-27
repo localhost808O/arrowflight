@@ -1,10 +1,15 @@
 # Benchmark result schema
 
-New paired benchmark runs use schema version `1.0.0`, defined by
-[`schema/benchmark-result-v1.schema.json`](schema/benchmark-result-v1.schema.json).
+New paired benchmark runs use schema version `2.0.0`, defined by
+[`schema/benchmark-result-v2.schema.json`](schema/benchmark-result-v2.schema.json).
+Execution infrastructure and CI eligibility are governed separately by the
+[GitHub-hosted runner feasibility decision](../../docs/benchmarks/github-hosted-runner-feasibility.md).
+A schema-valid diagnostic smoke result is not performance evidence.
+
 The contract covers four artifact types:
 
-- `run.json` records source SHA and dirty state, workload policy, runtime pins,
+- `run.json` records source SHA and dirty state, workload policy, resolved
+  container IDs and library pins, Spark/Hadoop/JVM/Flight/DuckDB settings,
   topology, the deterministic engine-order schedule, timestamps, and terminal
   status.
 - `observations/observation-NNN/<engine>/engine-result.json` retains every
@@ -51,9 +56,11 @@ multiple nodes is classified as `distributed` and keeps its concrete
 `uniform_path`; differing node paths are `mixed`. `fallback` and `unknown`
 never set `pushdown_evidence` to true.
 
-The harness captures `run-context.json` before execution, preserves every raw
-observation, and validates all four artifact types before updating the
-publishable dashboard. Validate an artifact manually with:
+The harness captures `run-context.json` before execution, resolves runtime
+container IDs after the images have been built, preserves every raw
+observation, and validates all four artifact types against the actual Draft
+2020-12 JSON Schema before updating the publishable dashboard. Validate an
+artifact manually with:
 
 ```bash
 python benchmarks/benchbase-spark/benchmark-result-schema.py validate \
@@ -61,7 +68,17 @@ python benchmarks/benchbase-spark/benchmark-result-schema.py validate \
 ```
 
 Breaking contract changes require a new schema file and a new
-`schema_version`; existing version `1.0.0` artifacts remain immutable.
+`schema_version`. Version `1.0.0` remains available for validation, while all
+new artifacts use `2.0.0`.
+
+Schema validity and publication eligibility are deliberately separate. A
+failed, dirty, or partially captured run can still be a valid v2 document so
+automation can diagnose it. Publication additionally requires a clean
+40-character source SHA, resolved content-addressed BenchBase and generator
+image IDs, a dataset manifest and digest, SQL and formatted physical plans for
+both engines, recorded host resources, three complete correct pairs, and both
+engine orders. Each rejection is retained in
+`comparison.publication.reasons`.
 
 ## Curated publication matrix
 
@@ -69,8 +86,10 @@ The primary Pages index contains only schema-valid, publishable paired runs for
 TPC-H Q1, Q6, or Q14 at scale factor 0.1 or 1 and with 1, 3, or 8 Flight
 nodes. Set `BENCHBASE_HOST_RESOURCES` to a concise host description, for
 example `8 vCPU, 32 GiB RAM, Spark workers=2`; a matrix point without recorded
-resources remains exploratory. All-query and legacy runs are written to
-`exploratory.html` and `exploratory-benchmarks.json`.
+resources remains exploratory. Schema-valid all-query, smoke, diagnostic, and
+other non-matrix runs are written to `exploratory.html` and
+`exploratory-benchmarks.json`. Invalid or unversioned legacy artifacts are not
+copied into the deployed Pages bundle.
 
 The curated table identifies query, scale, node/resources topology, cache
 policy, warmup, deterministic order schedule, paired-observation count, sample

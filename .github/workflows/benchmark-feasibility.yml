@@ -1,0 +1,126 @@
+name: Benchmark Runner Feasibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-runner-feasibility
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Diagnostic smoke trial ${{ matrix.trial }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        trial: [1, 2, 3]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Record runner capacity
+        run: |
+          uname -a
+          nproc
+          free -b
+          df -B1 .
+          docker info
+          docker system df
+
+      - name: Run measured one-node Q6 comparison
+        id: probe
+        env:
+          BENCHBASE_RESULTS_ID: github-hosted-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.trial }}
+          BENCHMARK_SCALE_FACTOR: "0.01"
+          BENCHBASE_CLUSTER_NODES: "1"
+          BENCHBASE_PAIRED_OBSERVATIONS: "1"
+          BENCHBASE_COMPARE_ORDER: flight-first
+          BENCHBASE_CACHE_POLICY: warm-cache
+          BENCHBASE_TIME_SECONDS: "10"
+          BENCHBASE_WARMUP_SECONDS: "0"
+          BENCHBASE_TERMINALS: "1"
+          BENCHBASE_UPDATE_PAGES: "false"
+          BENCHBASE_CAPTURE_TIMEOUT_SECONDS: "120"
+          BENCHMARK_OBSERVABILITY: "false"
+          BENCHMARK_GENERATOR_BUILD_RETRIES: "2"
+          DIRECT_PARQUET_PARTITIONS: "1"
+          UBUNTU_MIRROR: http://archive.ubuntu.com/ubuntu
+        run: |
+          set +e
+          trial_dir="feasibility/trial-${{ matrix.trial }}"
+          result_dir="benchmarks/benchbase-spark/results/${BENCHBASE_RESULTS_ID}"
+          mkdir -p "${trial_dir}"
+          export BENCHBASE_HOST_RESOURCES
+          BENCHBASE_HOST_RESOURCES="$(
+            printf 'GitHub ubuntu-latest; %s vCPU; %s bytes RAM' \
+              "$(nproc)" \
+              "$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)"
+          )"
+          python benchmarks/benchbase-spark/measure-benchmark-feasibility.py run \
+            --output "${trial_dir}" \
+            --artifact "${result_dir}" \
+            --label "ubuntu-latest-q6-trial-${{ matrix.trial }}" \
+            --timeout-seconds 3600 \
+            -- \
+            bash benchmarks/benchbase-spark/run-benchbase-spark.sh \
+              tpch compare q6
+          probe_status="$?"
+          docker compose -f docker-compose.yml --profile benchbase \
+            logs --no-color >"${trial_dir}/docker-compose.log" 2>&1
+          if [[ -d "${result_dir}" ]]; then
+            cp -a "${result_dir}" "${trial_dir}/result"
+          fi
+          printf '%s\n' "${probe_status}" >"${trial_dir}/probe-exit-code.txt"
+          docker compose -f docker-compose.yml --profile benchbase \
+            down -v --remove-orphans
+          exit 0
+
+      - name: Upload trial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trial-${{ matrix.trial }}
+          path: feasibility/trial-${{ matrix.trial }}/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+  summarize:
+    name: Summarize feasibility decision evidence
+    if: always()
+    needs: probe
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download trial evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trial-*
+          path: feasibility
+
+      - name: Aggregate resource use and flakiness
+        run: |
+          python benchmarks/benchbase-spark/measure-benchmark-feasibility.py \
+            summarize \
+            --root feasibility \
+            --output feasibility/summary
+          cat feasibility/summary/feasibility-summary.md \
+            >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload aggregate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-feasibility-summary
+          path: feasibility/summary/
+          if-no-files-found: error
+          retention-days: 14

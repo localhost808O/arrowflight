@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("build-pages-site.py")
@@ -86,6 +87,7 @@ class AllQueryChartTest(unittest.TestCase):
             "scale": 1,
             "flightNodes": 3,
             "machineReadable": True,
+            "publicationState": "publishable",
             "hostResources": "8 vCPU, 32 GiB RAM",
         }
 
@@ -98,6 +100,15 @@ class AllQueryChartTest(unittest.TestCase):
         self.assertFalse(
             BUILD_PAGES_SITE.is_curated_matrix_run(
                 {**base, "query": "q1", "machineReadable": False}
+            )
+        )
+        self.assertFalse(
+            BUILD_PAGES_SITE.is_curated_matrix_run(
+                {
+                    **base,
+                    "query": "q1",
+                    "publicationState": "not-publishable",
+                }
             )
         )
 
@@ -166,13 +177,85 @@ class MachineResultTest(unittest.TestCase):
                 json.dumps(machine_result), encoding="utf-8"
             )
 
-            run = BUILD_PAGES_SITE.load_compare_run(results, run_dir)
+            with mock.patch.object(
+                BUILD_PAGES_SITE,
+                "read_valid_machine_result",
+                return_value=machine_result,
+            ):
+                run = BUILD_PAGES_SITE.load_compare_run(results, run_dir)
 
         self.assertEqual(4.0, run["flight"]["avgMs"])
         self.assertEqual(2.5, run["flight"]["throughput"])
         self.assertEqual("Q6", run["flight"]["queryLatencies"][0]["query"])
         self.assertEqual(3, run["flightNodes"])
         self.assertEqual(2.0, run["pairedSpeedup"])
+
+    def test_rejects_claimed_valid_result_that_fails_schema(self):
+        """A self-declared valid artifact cannot enter the Pages index."""
+        with tempfile.TemporaryDirectory() as directory:
+            results = Path(directory)
+            run_dir = results / "tpch-compare-q6-invalid"
+            run_dir.mkdir()
+            (run_dir / "compare.report.html").write_text(
+                "report", encoding="utf-8"
+            )
+            (run_dir / "benchmark-result.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2.0.0",
+                        "artifact_type": "paired-comparison",
+                        "validation": {"valid": True},
+                        "comparison": {
+                            "publication": {"state": "publishable"}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            run = BUILD_PAGES_SITE.load_compare_run(results, run_dir)
+
+        self.assertIsNone(run)
+
+    def test_copy_excludes_legacy_but_keeps_valid_diagnostics(self):
+        """Only schema-valid machine artifacts enter the public file bundle."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "results"
+            output = root / "pages"
+            legacy = results / "legacy"
+            diagnostic = results / "diagnostic"
+            legacy.mkdir(parents=True)
+            diagnostic.mkdir()
+            (legacy / "old.summary.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (diagnostic / "benchmark-result.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (diagnostic / "compare.report.html").write_text(
+                "report", encoding="utf-8"
+            )
+            machine_result = {
+                "validation": {"valid": True},
+                "comparison": {
+                    "publication": {"state": "not-publishable"}
+                },
+            }
+
+            with mock.patch.object(
+                BUILD_PAGES_SITE,
+                "read_valid_machine_result",
+                side_effect=lambda path: (
+                    machine_result if path.exists() else None
+                ),
+            ):
+                BUILD_PAGES_SITE.copy_results(results, output)
+
+            self.assertFalse((output / "benchmarks" / "legacy").exists())
+            self.assertTrue(
+                (output / "benchmarks" / "diagnostic").exists()
+            )
 
 
 if __name__ == "__main__":

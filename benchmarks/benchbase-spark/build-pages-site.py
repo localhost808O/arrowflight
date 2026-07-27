@@ -2,6 +2,7 @@
 import argparse
 import csv
 import html
+import importlib.util
 import json
 import shutil
 from datetime import datetime
@@ -12,6 +13,28 @@ THROUGHPUT = "Throughput (requests/second)"
 CURATED_QUERIES = {"q1", "q6", "q14"}
 CURATED_SCALE_FACTORS = {0.1, 1.0}
 CURATED_FLIGHT_NODES = {1, 3, 8}
+REPORT_URL = (
+    "https://github.com/nsu-fit/ArrowFlight/blob/main/"
+    "docs/benchmarks/tpch-flight-vs-direct-v2.md"
+)
+FEASIBILITY_URL = (
+    "https://github.com/nsu-fit/ArrowFlight/blob/main/"
+    "docs/benchmarks/github-hosted-runner-feasibility.md"
+)
+
+
+def load_schema_module():
+    """Load the versioned benchmark validator shared with the harness."""
+    path = Path(__file__).resolve().parent / "benchmark-result-schema.py"
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_result_schema_for_pages", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RESULT_SCHEMA = load_schema_module()
 
 
 def parse_args():
@@ -28,6 +51,18 @@ def read_json(path):
         return {}
     with path.open(encoding="utf-8") as file:
         return json.load(file)
+
+
+def read_valid_machine_result(path):
+    """Read one machine artifact only when its declared schema validates."""
+    if not path.exists():
+        return None
+    try:
+        artifact = read_json(path)
+        RESULT_SCHEMA.validate_artifact(artifact)
+        return artifact
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
 
 
 def read_csv(path):
@@ -216,14 +251,14 @@ def load_compare_run(results_root, run_dir):
     report = run_dir / "compare.report.html"
     if not report.exists():
         return None
-    machine_result = read_json(run_dir / "benchmark-result.json")
-    if machine_result:
-        validation = machine_result.get("validation", {})
-        publication = machine_result.get("comparison", {}).get("publication", {})
-        if validation.get("valid") is not True:
-            return None
-        if publication.get("state") != "publishable":
-            return None
+    machine_path = run_dir / "benchmark-result.json"
+    machine_result = read_valid_machine_result(machine_path)
+    if not machine_path.exists() or not machine_result:
+        return None
+    validation = machine_result.get("validation", {})
+    publication = machine_result.get("comparison", {}).get("publication", {})
+    if validation.get("valid") is not True:
+        return None
 
     if machine_result.get("observations"):
         flight = load_machine_engine(
@@ -285,6 +320,8 @@ def load_compare_run(results_root, run_dir):
         ),
         "pairedSpeedup": paired_speedup(machine_result),
         "machineReadable": bool(machine_result),
+        "publicationState": publication.get("state", "not-publishable"),
+        "publicationReasons": publication.get("reasons", []),
     }
 
 
@@ -298,6 +335,7 @@ def is_curated_matrix_run(run):
     return (
         run.get("kind") == "compare"
         and run.get("machineReadable") is True
+        and run.get("publicationState") == "publishable"
         and str(run.get("benchmark", "")).lower() == "tpch"
         and str(run.get("query", "")).lower() in CURATED_QUERIES
         and scale in CURATED_SCALE_FACTORS
@@ -318,16 +356,6 @@ def collect_runs(results_root):
         if run:
             runs.append(run)
 
-    for summary in results_root.rglob("*.summary.json"):
-        run_dir = summary.parent
-        if run_dir in compare_dirs or any(
-            compare_dir in run_dir.parents for compare_dir in compare_dirs
-        ):
-            continue
-        run = load_single_run(results_root, run_dir)
-        if run:
-            runs.append(run)
-
     runs.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
     return runs
 
@@ -337,27 +365,36 @@ def copy_results(results_root, out_dir):
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True, exist_ok=True)
+    (target / ".gitkeep").write_text("", encoding="utf-8")
 
     if not results_root.exists():
         return
 
     for path in results_root.iterdir():
-        machine_result = read_json(path / "benchmark-result.json")
-        if machine_result:
-            validation = machine_result.get("validation", {})
-            publication = machine_result.get("comparison", {}).get(
-                "publication", {}
-            )
-            if (
-                validation.get("valid") is not True
-                or publication.get("state") != "publishable"
-            ):
-                continue
+        if not path.is_dir():
+            continue
+        machine_path = path / "benchmark-result.json"
+        machine_result = read_valid_machine_result(machine_path)
+        if (
+            not machine_path.exists()
+            or not machine_result
+            or not (path / "compare.report.html").is_file()
+        ):
+            continue
+        validation = machine_result.get("validation", {})
+        if validation.get("valid") is not True:
+            continue
         destination = target / path.name
-        if path.is_dir():
-            shutil.copytree(path, destination)
-        elif path.is_file():
-            shutil.copy2(path, destination)
+        shutil.copytree(path, destination)
+
+
+def copy_schemas(out_dir):
+    """Publish immutable machine-readable result schemas with the dashboard."""
+    source = Path(__file__).resolve().parent / "schema"
+    target = out_dir / "schemas"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
 
 
 def metric_cell(run, side, field, suffix=""):
@@ -534,6 +571,7 @@ def build_index(runs, curated=True):
         <td>{html.escape(str(run.get("pairedObservations", "-")))}</td>
         <td>{html.escape(str(run.get("sampleCount", "-")))}</td>
         <td>{fmt(run.get("pairedSpeedup")) + "x" if run.get("pairedSpeedup") else "-"}</td>
+        <td title="{html.escape('; '.join(str(reason) for reason in run.get('publicationReasons', [])))}">{html.escape(str(run.get("publicationState", "-")))}</td>
         <td>{' '.join(links)}</td>
       </tr>
 """
@@ -553,6 +591,7 @@ def build_index(runs, curated=True):
         <td>{fmt(run["avgMs"])} ms</td>
         <td>-</td>
         <td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>
+        <td>-</td><td>legacy</td>
         <td>{' '.join(link for link in links if link)}</td>
       </tr>
 """
@@ -594,8 +633,9 @@ def build_index(runs, curated=True):
 </head>
 <body>
 <main>
-  <h1>{"Curated Arrow Flight Benchmark Matrix" if curated else "Exploratory and Historical Benchmarks"}</h1>
-  <p>{"Only schema-valid, publishable paired TPC-H Q1/Q6/Q14 measurements at SF 0.1/1 and 1/3/8 Flight nodes are shown. Conclusions are per query; no global speedup is claimed." if curated else "All-query, legacy, diagnostic, and other valid results are kept separate from the publishable matrix."}</p>
+  <h1>{"Curated Arrow Flight Benchmark Matrix" if curated else "Exploratory Benchmarks"}</h1>
+  <p>{"Only schema-valid, publishable paired TPC-H Q1/Q6/Q14 measurements at SF 0.1/1 and 1/3/8 Flight nodes are shown. Conclusions are per query; no global speedup is claimed." if curated else "Schema-valid all-query, smoke, diagnostic, and other non-matrix results are kept separate here. Invalid and unversioned legacy artifacts are not deployed."}</p>
+  <p><a href="{REPORT_URL}">Versioned reproducibility and interpretation report (v2)</a> · <a href="{FEASIBILITY_URL}">GitHub-hosted runner decision</a> · <a href="schemas/benchmark-result-v2.schema.json">JSON Schema v2</a></p>
   <p><a href="{"exploratory.html" if curated else "index.html"}">{"Open exploratory/history" if curated else "Back to curated matrix"}</a></p>
 
   <div class="cards">
@@ -641,6 +681,7 @@ def build_index(runs, curated=True):
         <th>Pairs</th>
         <th>Samples</th>
         <th>Paired speedup</th>
+        <th>State</th>
         <th>Open</th>
       </tr>
     </thead>
@@ -707,6 +748,7 @@ def main():
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     copy_results(results_root, out_dir)
+    copy_schemas(out_dir)
 
     runs = collect_runs(results_root)
     curated_runs = [run for run in runs if is_curated_matrix_run(run)]

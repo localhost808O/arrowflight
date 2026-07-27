@@ -8,8 +8,13 @@
 
 The public benchmark dashboard opens the curated, schema-valid TPC-H matrix
 (Q1, Q6, and Q14; SF 0.1 and 1; 1, 3, and 8 Flight nodes). All-query,
-diagnostic, and historical runs are available from its separate exploratory
-page and are never mixed into curated charts or conclusions.
+smoke, and diagnostic runs with valid versioned artifacts are available from
+its separate exploratory page and are never mixed into curated charts or
+conclusions. Invalid and unversioned legacy runs are not deployed. Read the
+versioned [reproducibility and interpretation report](docs/benchmarks/tpch-flight-vs-direct-v2.md)
+for the result contract, exact commands, evidence links, and limitations. The
+[GitHub-hosted runner feasibility decision](docs/benchmarks/github-hosted-runner-feasibility.md)
+keeps Docker performance measurements out of required PR checks.
 
 High-performance **Arrow Flight SQL** server for analytical queries on Parquet data. Built for teams running SQL over large Parquet datasets in distributed environments (HDFS, S3, local FS).
 
@@ -170,6 +175,12 @@ PR checks (`.github/workflows/ci.yml`) enforce on every pull request:
 - `integration` — integration + spark + smoke tests via `mvn test -P integration`
 - `coverage` — JaCoCo coverage with per-file table in PR comments and detailed HTML report on GitHub Pages
 
+The required benchmark Pages check validates schemas, reports, and publication
+semantics only. It does not run the Spark/HDFS/Flight Docker benchmark or claim
+performance-regression detection. A manual diagnostic feasibility workflow is
+documented in the
+[GitHub-hosted runner decision](docs/benchmarks/github-hosted-runner-feasibility.md).
+
 **Run tests locally**:
 ```bash
 ./mvnw test                  # unit (excludes integration/spark/perf/smoke)
@@ -248,3 +259,5 @@ Key properties (see `AppConfig.java` / `ConfigAdapter.java` for the full list):
 | **[ADR](docs/adr/)** | Architecture Decision Records for distribution and benchmark strategy |
 | **[User Guide — Build & Test](docs/user_guides/build-test-and-scripts.md)** | Build profiles, unit/integration/perf test commands and `run.sh` usage |
 | **[BenchBase Spark — Linux](docs/user_guides/benchbase-spark-linux.ru.md)** | Russian guide for selected TPC-H queries and Flight-vs-Direct comparison runs |
+| **[Benchmark Report v2](docs/benchmarks/tpch-flight-vs-direct-v2.md)** | English reproducibility contract, curated matrix, evidence, and interpretation guide |
+| **[Benchmark Runner Feasibility](docs/benchmarks/github-hosted-runner-feasibility.md)** | GitHub-hosted runner measurements, go/no-go decision, retention, and publication handoff |

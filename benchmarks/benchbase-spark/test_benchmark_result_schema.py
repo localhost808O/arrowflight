@@ -16,6 +16,12 @@ SPEC = importlib.util.spec_from_file_location(
 )
 SCHEMA = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SCHEMA)
+PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "validate_benchmark_publication_for_schema_test",
+    SCRIPT_DIR / "validate-benchmark-publication.py",
+)
+PUBLICATION = importlib.util.module_from_spec(PUBLICATION_SPEC)
+PUBLICATION_SPEC.loader.exec_module(PUBLICATION)
 
 
 class BenchmarkResultSchemaTest(unittest.TestCase):
@@ -51,11 +57,59 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
                 "engine_order_schedule": schedule,
             },
             "runtime_dependencies": {
-                "spark": "3.5.9",
-                "hadoop": "3.3.6",
-                "arrow_flight": "18.0.0",
-                "duckdb": "1.4.1.0",
-                "jvm": "21",
+                "maven": {
+                    "spark": "3.5.9",
+                    "hadoop": "3.3.6",
+                    "arrow_flight": "18.0.0",
+                    "duckdb_jdbc": "1.4.1.0",
+                    "grpc": "1.65.0",
+                    "hazelcast": "5.6.0",
+                },
+                "arrowflight": {
+                    "image_ref": "arrowflight-test:test",
+                    "image_id": "sha256:" + "a" * 64,
+                },
+                "benchbase": {
+                    "image_ref": "benchbase:test",
+                    "image_id": "sha256:" + "b" * 64,
+                },
+                "generator": {
+                    "image_ref": "generator:test",
+                    "image_id": "sha256:" + "c" * 64,
+                    "duckdb_python": "1.4.1",
+                },
+                "hive_jdbc": "2.3.9",
+                "jvm": "openjdk version 21",
+                "python": "3.11.9",
+                "docker": "Docker version 28.0.0",
+                "docker_compose": "Docker Compose version v2.35.0",
+            },
+            "configuration": {
+                "spark": {
+                    "master_url": "spark://spark-master:7077",
+                    "sql_ansi_enabled": "true",
+                    "direct_parquet_partitions": 2,
+                    "thrift_server": "spark-thrift-server:10000",
+                },
+                "hadoop": {
+                    "data_dir": "hdfs://hdfs-namenode:8020/bench",
+                    "benchmark_path": "/bench",
+                    "block_size_bytes": 1073741824,
+                    "replication": 1,
+                },
+                "jvm": {"java_opts": "-Xmx2g"},
+                "flight": {
+                    "source_host": "flight-server-1",
+                    "source_port": 32010,
+                    "batch_size": 65536,
+                    "duckdb_threads": "2",
+                    "timing_log_level": "DEBUG",
+                    "log_level": "INFO",
+                },
+                "duckdb": {
+                    "threads": "2",
+                    "generator_image": "generator:test",
+                },
             },
             "topology": {
                 "cluster_nodes": 2,
@@ -64,12 +118,40 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
                     "flight-server-1:32010",
                     "flight-server-2:32010",
                 ],
+                "host_resources": "8 vCPU, 32 GiB RAM, Spark workers=2",
+            },
+            "inputs": {
+                name: {
+                    "path": path,
+                    "sha256": "d" * 64,
+                }
+                for name, path in {
+                    "docker_compose": "docker-compose.yml",
+                    "runtime_dockerfile": "docker/Dockerfile",
+                    "benchbase_dockerfile": (
+                        "benchmarks/benchbase-spark/Dockerfile"
+                    ),
+                    "generator_dockerfile": (
+                        "benchmarks/benchbase-spark/"
+                        "duckdb-generator.Dockerfile"
+                    ),
+                    "benchmark_config": (
+                        "benchmarks/benchbase-spark/config/tpch.xml"
+                    ),
+                }.items()
             },
         }
         self.write_json(self.results / "run-context.json", context)
         metadata = {
             "dataset": "tpch",
+            "schema": "tpch",
             "scale_factor": 1.0,
+            "storage": "hdfs",
+            "hdfs_data_dir": "hdfs://hdfs-namenode:8020/bench",
+            "hdfs_replication": 1,
+            "hdfs_block_size_bytes": 1073741824,
+            "shared_parquet_dataset": True,
+            "cluster_nodes": 2,
             "reference_queries": [
                 {
                     "query_id": 6,
@@ -84,6 +166,20 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
             "flight": [400000, 600000, 800000],
             "direct": [800000, 700000, 1000000],
         }
+        event = {
+            "schema_version": "1.0.0",
+            "timestamp": "1970-01-01T00:00:01.250000Z",
+            "qid": "one",
+            "node": "flight-server-1",
+            "query_digest": "b" * 64,
+            "execution_path": "duckdb-aggregation",
+            "pushdown_evidence": True,
+            "success": True,
+            "fallback_target": None,
+            "reason": None,
+            "failure_reason": None,
+        }
+        event_two = dict(event, qid="two", node="flight-server-2")
         for scheduled in schedule:
             observation_index = scheduled["observation_index"]
             observation = (
@@ -135,33 +231,21 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
                     f"6,Q6,2000000,{latency + 100000},0,2\n",
                     encoding="utf-8",
                 )
-        event = {
-            "schema_version": "1.0.0",
-            "timestamp": "1970-01-01T00:00:01.250000Z",
-            "qid": "one",
-            "node": "flight-server-1",
-            "query_digest": "b" * 64,
-            "execution_path": "duckdb-aggregation",
-            "pushdown_evidence": True,
-            "success": True,
-            "fallback_target": None,
-            "reason": None,
-            "failure_reason": None,
-        }
-        event_two = dict(event, qid="two", node="flight-server-2")
-        evidence = (
-            self.results
-            / "observations"
-            / "observation-001"
-            / "flight"
-            / "execution-paths"
-            / "nodes.jsonl"
-        )
-        evidence.parent.mkdir(parents=True)
-        evidence.write_text(
-            json.dumps(event) + "\n" + json.dumps(event_two) + "\n",
-            encoding="utf-8",
-        )
+                (directory / "tpch.config.xml").write_text(
+                    "<parameters/>\n", encoding="utf-8"
+                )
+                self.write_json(directory / "tpch.metrics.json", {})
+                self.write_json(directory / "tpch.params.json", {})
+                if engine == "flight":
+                    evidence = directory / "execution-paths" / "nodes.jsonl"
+                    evidence.parent.mkdir(parents=True)
+                    evidence.write_text(
+                        json.dumps(event)
+                        + "\n"
+                        + json.dumps(event_two)
+                        + "\n",
+                        encoding="utf-8",
+                    )
 
     def tearDown(self):
         """Remove the temporary benchmark fixture."""
@@ -181,6 +265,9 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
         artifact = self.build()
 
         SCHEMA.validate_artifact(artifact)
+        PUBLICATION.validate_artifact_set(
+            self.results / "benchmark-result.json"
+        )
         self.assertTrue((self.results / "run.json").exists())
         self.assertTrue(
             (
@@ -240,12 +327,56 @@ class BenchmarkResultSchemaTest(unittest.TestCase):
     def test_rejects_unknown_schema_version(self):
         """Validation requires an explicit new contract for a version change."""
         artifact = self.build()
-        artifact["schema_version"] = "2.0.0"
+        artifact["schema_version"] = "9.0.0"
 
         with self.assertRaisesRegex(
-            SCHEMA.SchemaValidationError, "must be 1.0.0"
+            SCHEMA.SchemaValidationError, "unsupported"
         ):
             SCHEMA.validate_artifact(artifact)
+
+    def test_keeps_v1_validation_available(self):
+        """The immutable v1 contract remains validatable after v2 adoption."""
+        artifact = self.build()
+        legacy_run = {
+            "schema_version": "1.0.0",
+            "artifact_type": "run",
+            "run": artifact["run"],
+        }
+
+        self.assertIs(
+            legacy_run, SCHEMA.validate_artifact(legacy_run)
+        )
+
+    def test_rejects_wrong_nested_type_from_json_schema(self):
+        """Validation executes nested JSON Schema constraints."""
+        artifact = self.build()
+        artifact["run"]["policy"]["warmup_seconds"] = "twenty"
+
+        with self.assertRaisesRegex(
+            SCHEMA.SchemaValidationError,
+            r"\$\.run\.policy\.warmup_seconds must have type integer",
+        ):
+            SCHEMA.validate_artifact(artifact)
+
+    def test_dirty_source_is_valid_but_not_publishable(self):
+        """A dirty source remains machine-valid while publication is denied."""
+        context_path = self.results / "run-context.json"
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        context["source"]["dirty"] = True
+        context["source"]["dirty_files"] = [" M benchmark-result-schema.py"]
+        self.write_json(context_path, context)
+
+        artifact = self.build()
+
+        self.assertTrue(artifact["comparison"]["validity"]["valid"])
+        self.assertEqual(
+            "not-publishable",
+            artifact["comparison"]["publication"]["state"],
+        )
+        self.assertIn(
+            "source-worktree-dirty",
+            artifact["comparison"]["publication"]["reasons"],
+        )
 
     def test_serializes_engine_failure_reason(self):
         """A failed engine remains present with explicit validity state."""

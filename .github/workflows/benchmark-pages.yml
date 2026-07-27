@@ -1,13 +1,24 @@
 name: Benchmark Pages
 
 on:
+  pull_request:
+    paths:
+      - pages/**
+      - docs/benchmarks/**
+      - benchmarks/benchbase-spark/**
+      - .github/workflows/benchmark-pages.yml
+      - .github/workflows/benchmark-feasibility.yml
+
   push:
     branches:
       - main
       - feature/bench-mark
     paths:
       - pages/**
+      - docs/benchmarks/**
+      - benchmarks/benchbase-spark/**
       - .github/workflows/benchmark-pages.yml
+      - .github/workflows/benchmark-feasibility.yml
 
   workflow_dispatch:
 
@@ -26,14 +37,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Verify Pages bundle
+      - name: Verify benchmark contract tests
         run: |
-          test -f pages/index.html
-          test -f pages/benchmarks.json
+          python -m unittest discover \
+            -s benchmarks/benchbase-spark \
+            -p 'test_*.py' \
+            -v
 
-      - name: Publish benchmark site
+      - name: Rebuild and validate publication bundle
+        run: |
+          check_dir="$(mktemp -d)"
+          trap 'rm -rf "${check_dir}"' EXIT
+          python benchmarks/benchbase-spark/build-benchmark-report.py \
+            --results pages/benchmarks \
+            --out "${check_dir}/tpch-flight-vs-direct-v2.md"
+          python benchmarks/benchbase-spark/build-pages-site.py \
+            --results pages/benchmarks \
+            --out "${check_dir}/pages"
+          python benchmarks/benchbase-spark/validate-benchmark-publication.py \
+            --pages "${check_dir}/pages" \
+            --report "${check_dir}/tpch-flight-vs-direct-v2.md"
+          diff -ru pages "${check_dir}/pages"
+          diff -u \
+            docs/benchmarks/tpch-flight-vs-direct-v2.md \
+            "${check_dir}/tpch-flight-vs-direct-v2.md"
+
+      - name: Replace published benchmark artifacts
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./pages/benchmarks
+          destination_dir: benchmarks
+          allow_empty_commit: true
+
+      - name: Publish benchmark dashboard
+        if: github.event_name != 'pull_request'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./pages
           keep_files: true
+          exclude_assets: benchmarks

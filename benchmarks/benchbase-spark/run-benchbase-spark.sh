@@ -78,6 +78,7 @@ Serial repetitions:
 
 Paired comparison:
   BENCHBASE_PAIRED_OBSERVATIONS=N schedules N pairs (default: 1).
+  BENCHBASE_CLUSTER_NODES=N selects 1-10 Flight/Spark worker nodes.
   BENCHBASE_COMPARE_ORDER=flight-first|direct-first selects the first pair;
   later pairs alternate automatically.
   BENCHBASE_CACHE_POLICY=warm-cache reuses the prepared stack without eviction.
@@ -146,11 +147,14 @@ join_by_comma() {
 read_cluster_nodes() {
   local props="${REPO_ROOT}/src/main/resources/arrowflight.properties"
   local nodes
-  nodes="$(awk -F= '/^[[:space:]]*numServers[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "${props}")"
+  nodes="${BENCHBASE_CLUSTER_NODES:-}"
+  if [[ -z "${nodes}" ]]; then
+    nodes="$(awk -F= '/^[[:space:]]*numServers[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "${props}")"
+  fi
   nodes="${nodes:-3}"
 
-  if [[ ! "${nodes}" =~ ^[0-9]+$ ]] || (( nodes < 1 )); then
-    echo "Bad numServers=${nodes}. Supported: >= 1." >&2
+  if [[ ! "${nodes}" =~ ^[0-9]+$ ]] || (( nodes < 1 || nodes > 10 )); then
+    echo "Bad cluster node count=${nodes}. Supported: 1-10." >&2
     exit 2
   fi
 
@@ -254,7 +258,22 @@ init_machine_result() {
     --cluster-nodes "${nodes}" \
     --flight-hosts "${FLIGHT_HOSTS}" \
     --flight-servers "${FLIGHT_SERVERS}" \
-    --host-resources "${BENCHBASE_HOST_RESOURCES:-not-recorded}" >/dev/null
+    --host-resources "${BENCHBASE_HOST_RESOURCES:-not-recorded}" \
+    --spark-master-url "${SPARK_MASTER_URL:-spark://spark-master:7077}" \
+    --spark-sql-ansi-enabled "${SPARK_SQL_ANSI_ENABLED}" \
+    --spark-thrift-server "spark-thrift-server:10000" \
+    --direct-parquet-partitions "${DIRECT_PARQUET_PARTITIONS}" \
+    --hdfs-data-dir "${HDFS_DATA_DIR}" \
+    --hdfs-benchmark-path "${HDFS_BENCHMARK_PATH}" \
+    --hdfs-block-size-bytes "${HDFS_BLOCK_SIZE_BYTES}" \
+    --hdfs-replication "1" \
+    --java-opts "${JAVA_OPTS:--Xmx2g}" \
+    --flight-source-host "${FLIGHT_SOURCE_HOST}" \
+    --flight-source-port "${FLIGHT_SOURCE_PORT}" \
+    --flight-batch-size "${FLIGHT_BATCH_SIZE}" \
+    --flight-duckdb-threads "${FLIGHT_DUCKDB_THREADS:-properties-default}" \
+    --flight-timing-log-level "${FLIGHT_TIMING_LOG_LEVEL:-inherited}" \
+    --flight-log-level "${FLIGHT_LOG_LEVEL:-INFO}" >/dev/null
 }
 
 build_machine_result() {
@@ -849,7 +868,11 @@ build_pages_site() {
   if [[ "${BENCHBASE_UPDATE_PAGES}" != "true" ]]; then
     return
   fi
+  run_python "${SCRIPT_DIR}/build-benchmark-report.py" \
+    --results "${RESULTS_ROOT}" >/dev/null
   run_python "${SCRIPT_DIR}/build-pages-site.py" --results "${RESULTS_ROOT}" --out "${PAGES_DIR}"
+  run_python "${SCRIPT_DIR}/validate-benchmark-publication.py" \
+    --pages "${PAGES_DIR}" >/dev/null
 }
 
 ensure_benchbase_image() {
@@ -1003,7 +1026,11 @@ init_compare_run() {
   local query_label="${QUERY_SET:-all}"
   query_label="${query_label,,}"
   query_label="${query_label//[^a-z0-9,]/-}"
-  COMPARE_PARENT_RUN_ID="${BENCHMARK}-compare-${query_label}-$(date +%Y%m%d-%H%M%S)"
+  if [[ -n "${RESULTS_RUN_ID}" ]]; then
+    COMPARE_PARENT_RUN_ID="${RESULTS_RUN_ID}"
+  else
+    COMPARE_PARENT_RUN_ID="${BENCHMARK}-compare-${query_label}-$(date +%Y%m%d-%H%M%S)"
+  fi
   RESULTS_RUN_ID="${COMPARE_PARENT_RUN_ID}"
   prepare_results_dir
   prepare_metadata_output

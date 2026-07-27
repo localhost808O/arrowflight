@@ -129,6 +129,7 @@ BENCHBASE_RATE=unlimited        # лимит requests/sec
 BENCHBASE_QUERY_TIMEOUT_SECONDS=120   # timeout BenchBase query через JDBC
 BENCHBASE_CAPTURE_TIMEOUT_SECONDS=120 # timeout повторного query для HTML-проверки
 BENCHBASE_PAIRED_OBSERVATIONS=3       # opt-in: publishable-запуск из трёх пар
+BENCHBASE_CLUSTER_NODES=3             # 1-10 Flight/Spark worker нод
 BENCHBASE_COMPARE_ORDER=flight-first  # порядок первой пары; следующие чередуются
 BENCHBASE_CACHE_POLICY=warm-cache     # один stack без eviction/reset между runs
 BENCHBASE_UPDATE_PAGES=false    # не обновлять локальную pages/
@@ -160,12 +161,17 @@ aggregate rows.
 JVM, Spark, HDFS или OS caches между runs; эффект порядка распределяется за счёт
 чередования. Warmup применяется отдельно в начале каждого engine run.
 
-Machine-readable `benchmark-result.json` хранит значения каждого наблюдения,
+Machine-readable `benchmark-result.json` по
+[schema v2](../../benchmarks/benchbase-spark/schema/benchmark-result-v2.schema.json)
+хранит значения каждого наблюдения,
 timestamps, порядок, warmup, cache policy, failure metadata и ссылки на все raw
 CSV. Агрегаты используют медиану каждого успешного наблюдения как один
 равновесный sample и показывают median, min/max spread, p25/p75, IQR и p95.
 Если один engine падает, harness всё равно запускает вторую половину пары и
 следующие пары, но такой результат не попадает в публикуемый dashboard.
+Английский
+[reproducibility and interpretation report](../benchmarks/tpch-flight-vs-direct-v2.md)
+содержит publication contract, точные команды и ограничения интерпретации.
 
 После измерения каждый выбранный query повторно выполняется через `beeline`, чтобы
 сохранить фактический результат в HTML report. Если этот запуск превышает

@@ -60,3 +60,6 @@ skills-lock.json
 Thumbs.db
 desktop.ini
 benchmark-results.json
+
+# Generated HTML
+*.html

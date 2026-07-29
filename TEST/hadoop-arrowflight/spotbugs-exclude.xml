@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- No serialVersionUID needed — these classes are not persisted, only sent over Spark task boundaries -->
+    <Match>
+        <Bug pattern="SE_NO_SERIALVERSIONUID,SE_NO_SERIALVERSIONID"/>
+    </Match>
+
+    <!--
+      EI_EXPOSE_REP / EI_EXPOSE_REP2: These DTO and Spark-connector classes intentionally
+      expose their internal arrays/maps directly for performance in hot Spark paths.
+      Defensive copies would add GC pressure without a real security boundary here.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!--
+      DM_EXIT: System.exit() is intentional in the server main() entry-point.
+    -->
+    <Match>
+        <Bug pattern="DM_EXIT"/>
+        <Class name="net.surpin.data.arrowflight.server.HadoopArrowFlightServer"/>
+    </Match>
+
+    <!--
+      DLS_DEAD_LOCAL_STORE: rexBuilder in SubstraitFilterConverter is captured by an inner
+      anonymous class — SpotBugs does not track cross-anonymous-class variable capture.
+    -->
+    <Match>
+        <Bug pattern="DLS_DEAD_LOCAL_STORE"/>
+        <Class name="~net\.surpin\.data\.arrowflight\.server\.SubstraitFilterConverter.*"/>
+    </Match>
+
+    <!--
+      RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE: arrowSchema at line 293 of
+      HadoopFlightSqlService can legitimately be null (getQuerySchema may return null);
+      the null guard is intentional.
+    -->
+    <Match>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/>
+        <Class name="net.surpin.data.arrowflight.server.HadoopFlightSqlService"/>
+    </Match>
+
+    <!--
+      MS_EXPOSE_REP: getOrCreate() is the singleton accessor — returning the static instance
+      is correct and intentional.
+      SING_SINGLETON_IMPLEMENTS_SERIALIZABLE: readResolve() is implemented; singleton contract
+      is preserved across serialization.
+    -->
+    <Match>
+        <Bug pattern="MS_EXPOSE_REP,SING_SINGLETON_IMPLEMENTS_SERIALIZABLE"/>
+        <Class name="net.surpin.data.arrowflight.client.ArrowConversion"/>
+    </Match>
+</FindBugsFilter>

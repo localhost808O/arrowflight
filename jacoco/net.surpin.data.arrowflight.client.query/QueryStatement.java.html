@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>QueryStatement.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.query</a> &gt; <span class="el_source">QueryStatement.java</span></div><h1>QueryStatement.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.query;
+
+import java.io.Serializable;
+
+/**
+ * The read statement for querying data from remote flight service
+ */
+public class QueryStatement implements Serializable {
+    private final String stmt;
+    private final String where;
+    private final String groupBy;
+
+    /**
+     * Construct a ReadStatement
+     * @param stmt - the select portion of a select-statement
+     * @param where - the where portion of a select-statement
+     * @param groupBy - the groupBy portion of a select-statement
+     */
+<span class="fc" id="L19">    public QueryStatement(String stmt, String where, String groupBy) {</span>
+<span class="fc" id="L20">        this.stmt = stmt;</span>
+<span class="fc" id="L21">        this.where = where;</span>
+<span class="fc" id="L22">        this.groupBy = groupBy;</span>
+<span class="fc" id="L23">    }</span>
+
+    /**
+     * Check if the current ReadStatement is different from the input ReadStatement
+     * @param rs - one ReadStatement to be compared
+     * @return - true if they are different
+     */
+    public boolean different(QueryStatement rs) {
+<span class="fc bfc" id="L31" title="All 4 branches covered.">        boolean changed = (rs == null || !rs.stmt.equalsIgnoreCase(this.stmt));</span>
+<span class="fc bfc" id="L32" title="All 2 branches covered.">        if (!changed) {</span>
+<span class="pc bpc" id="L33" title="1 of 6 branches missed.">            changed = (rs.where != null) ? !rs.where.equalsIgnoreCase(this.where) : this.where != null;</span>
+        }
+<span class="fc bfc" id="L35" title="All 2 branches covered.">        if (!changed) {</span>
+<span class="pc bpc" id="L36" title="1 of 6 branches missed.">            changed = (rs.groupBy != null) ? !rs.groupBy.equalsIgnoreCase(this.groupBy) : this.groupBy != null;</span>
+        }
+<span class="fc" id="L38">        return changed;</span>
+    }
+
+    /**
+     * Get the whole select-statement
+     * @return - the select-statement
+     */
+    public String getStatement() {
+<span class="fc" id="L46">        return String.format(&quot;%s %s %s&quot;, this.stmt,</span>
+<span class="fc bfc" id="L47" title="All 4 branches covered.">            (this.where != null &amp;&amp; this.where.length() &gt; 0) ? String.format(&quot;where %s&quot;, this.where) : &quot;&quot;,</span>
+<span class="fc bfc" id="L48" title="All 4 branches covered.">            (this.groupBy != null &amp;&amp; this.groupBy.length() &gt; 0) ? String.format(&quot;group by %s&quot;, this.groupBy) : &quot;&quot;</span>
+        );
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

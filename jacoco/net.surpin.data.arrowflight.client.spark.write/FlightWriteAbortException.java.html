@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightWriteAbortException.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.write</a> &gt; <span class="el_source">FlightWriteAbortException.java</span></div><h1>FlightWriteAbortException.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.write;
+
+import java.io.IOException;
+import java.io.Serializable;
+
+/**
+ * Exception thrown when a streaming write is aborted, carrying partition, task, and message count details.
+ */
+public class FlightWriteAbortException extends IOException implements Serializable {
+    /**
+     * Construct a success Flight-Writer-Commit-Message
+     * @param partitionId - the partition-id of the data-frame been written
+     * @param taskId - the task id of the writing operation
+     * @param messageCount - number of rows been written
+     */
+    public FlightWriteAbortException(int partitionId, long taskId, long messageCount) {
+<span class="fc" id="L17">        super(getMessage(partitionId, taskId, messageCount));</span>
+<span class="fc" id="L18">    }</span>
+
+    /**
+     * Construct a failure Flight-Writer-Commit-Message
+     * @param partitionId - the partition-id of the data-frame been written
+     * @param taskId - the task id of the writing operation
+     * @param epochId - the epoch-id for streaming write.
+     * @param messageCount - number of rows been written
+     */
+    public FlightWriteAbortException(int partitionId, long taskId, String epochId, long messageCount) {
+<span class="fc" id="L28">        super(getMessage(partitionId, taskId, epochId, messageCount));</span>
+<span class="fc" id="L29">    }</span>
+
+    /**
+     * @param partitionId partition id of the data frame
+     * @param taskId task id of the write operation
+     * @param messageCount number of rows written
+     * @return formatted abort message
+     */
+    private static String getMessage(int partitionId, long taskId, long messageCount) {
+<span class="fc" id="L38">        return String.format(&quot;Streaming write for %d messages with partition (%d), task (%d) aborted.&quot;, messageCount, partitionId, taskId);</span>
+    }
+
+    /**
+     * @param partitionId partition id of the data frame
+     * @param taskId task id of the write operation
+     * @param epochId epoch id for streaming write
+     * @param messageCount number of rows written
+     * @return formatted abort message with epoch info
+     */
+    private static String getMessage(int partitionId, long taskId, String epochId, long messageCount) {
+<span class="fc" id="L49">        return String.format(&quot;Streaming write for %d messages with partition (%d), task (%d) and epoch (%s) aborted.&quot;, messageCount, partitionId, taskId, epochId);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

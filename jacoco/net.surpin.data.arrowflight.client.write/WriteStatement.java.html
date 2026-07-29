@@ -1,0 +1,657 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WriteStatement.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.write</a> &gt; <span class="el_source">WriteStatement.java</span></div><h1>WriteStatement.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.write;
+
+import org.apache.arrow.vector.types.Types;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.expressions.UnsafeArrayData;
+import org.apache.spark.sql.catalyst.expressions.UnsafeMapData;
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.catalyst.util.DateTimeUtils;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.spark.sql.types.*;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.Serial;
+import java.io.Serializable;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.stream.IntStream;
+import java.time.format.DateTimeFormatter;
+
+/**
+ * The write statement for writing data to remote flight service
+ */
+public class WriteStatement implements Serializable {
+    /**
+     * Execute function with three arguments
+     */
+    @FunctionalInterface
+    private interface Execute&lt;X, Y, Z, R&gt; {
+        R apply(X x, Y y, Z z);
+    }
+    //the values variable
+    private static final String VAR_VALUES = &quot;${param_Values}&quot;;
+    private static final String CAST_FORMAT = &quot;cast(%s as %s)&quot;;
+    private static final String DECIMAL_TYPE = &quot;decimal&quot;;
+    private static final String VARCHAR_TYPE = &quot;varchar&quot;;
+<span class="fc" id="L44">    private static final DateTimeFormatter DATE_FORMAT =</span>
+<span class="fc" id="L45">        DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd&quot;);</span>
+<span class="fc" id="L46">    private static final DateTimeFormatter TIME_SECOND_FORMAT =</span>
+<span class="fc" id="L47">        DateTimeFormatter.ofPattern(&quot;HH:mm:ss&quot;);</span>
+<span class="fc" id="L48">    private static final DateTimeFormatter TIME_MILLI_FORMAT =</span>
+<span class="fc" id="L49">        DateTimeFormatter.ofPattern(&quot;HH:mm:ss.SSS&quot;);</span>
+<span class="fc" id="L50">    private static final DateTimeFormatter TIME_MICRO_FORMAT =</span>
+<span class="fc" id="L51">        DateTimeFormatter.ofPattern(&quot;HH:mm:ss.SSSSSS&quot;);</span>
+<span class="fc" id="L52">    private static final DateTimeFormatter TIME_NANO_FORMAT =</span>
+<span class="fc" id="L53">        DateTimeFormatter.ofPattern(&quot;HH:mm:ss.SSSSSSSSS&quot;);</span>
+<span class="fc" id="L54">    private static final DateTimeFormatter TIMESTAMP_SECOND_FORMAT =</span>
+<span class="fc" id="L55">        DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd HH:mm:ss&quot;);</span>
+<span class="fc" id="L56">    private static final DateTimeFormatter TIMESTAMP_MILLI_FORMAT =</span>
+<span class="fc" id="L57">        DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd HH:mm:ss.SSS&quot;);</span>
+<span class="fc" id="L58">    private static final DateTimeFormatter TIMESTAMP_MICRO_FORMAT =</span>
+<span class="fc" id="L59">        DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd HH:mm:ss.SSSSSS&quot;);</span>
+<span class="fc" id="L60">    private static final DateTimeFormatter TIMESTAMP_NANO_FORMAT =</span>
+<span class="fc" id="L61">        DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd HH:mm:ss.SSSSSSSSS&quot;);</span>
+    //the to-object-converter container (transient — re-initialized lazily after deserialization)
+    private transient Map&lt;ConverterKey,
+        Execute&lt;Object, Field, DataType, String&gt;&gt; converters;
+
+    //data schema
+    private final StructType dataSchema;
+    //arrow schema
+    private final String arrowSchema;
+    //the parameter name in the WriteStatement
+    private final String[] params;
+
+    //the statement in the format of either merge into or insert into sql statement
+    private String stmt;
+
+    /**
+     * Identifies a converter by Spark and Arrow types.
+     *
+     * @param sparkType Spark type name
+     * @param arrowType Arrow minor type
+     */
+<span class="nc" id="L82">    private record ConverterKey(</span>
+        String sparkType,
+        Types.MinorType arrowType) {
+    }
+
+    /**
+     * Creates a converter key.
+     *
+     * @param dataType Spark data type
+     * @param arrowType Arrow minor type
+     * @return converter key
+     */
+    private static ConverterKey converterKey(
+        DataType dataType,
+        Types.MinorType arrowType) {
+<span class="nc" id="L97">        return new ConverterKey(</span>
+<span class="nc" id="L98">            dataType.getClass().getTypeName().replaceAll(&quot;\\$$&quot;, &quot;&quot;),</span>
+            arrowType);
+    }
+
+    /**
+     * Registers a converter for the supplied Spark types.
+     *
+     * @param arrowType Arrow type
+     * @param converter value converter
+     * @param sparkTypes supported Spark types
+     */
+    private void register(
+        Types.MinorType arrowType,
+        Execute&lt;Object, Field, DataType, String&gt; converter,
+        Class&lt;?&gt;... sparkTypes) {
+<span class="nc bnc" id="L113" title="All 2 branches missed.">        for (Class&lt;?&gt; sparkType : sparkTypes) {</span>
+<span class="nc" id="L114">            converters.put(</span>
+<span class="nc" id="L115">                new ConverterKey(sparkType.getTypeName(), arrowType),</span>
+                converter);
+        }
+<span class="nc" id="L118">    }</span>
+
+    /** Registers timestamp and date converters for one Arrow timestamp type. */
+    private void registerTimestamp(
+        Types.MinorType arrowType,
+        DateTimeFormatter formatter,
+        boolean timezoneAware) {
+<span class="nc" id="L125">        register(arrowType,</span>
+<span class="nc" id="L126">            (value, field, type) -&gt; formatTimestamp(</span>
+                value, field, formatter, mapTimestamp, timezoneAware),
+            TimestampType.class);
+<span class="nc" id="L129">        register(arrowType,</span>
+<span class="nc" id="L130">            (value, field, type) -&gt; formatDateTimestamp(</span>
+                value, field, formatter, mapTimestamp, timezoneAware),
+            DateType.class);
+<span class="nc" id="L133">    }</span>
+
+    /**
+     * Deserialize and reinitialize transient converters
+     * @param in object input stream
+     * @throws IOException on deserialization failure
+     * @throws ClassNotFoundException on missing class
+     */
+    @Serial
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+<span class="nc" id="L143">        in.defaultReadObject();</span>
+<span class="nc" id="L144">        this.converters = new java.util.HashMap&lt;&gt;();</span>
+<span class="nc" id="L145">    }</span>
+
+    //the following is the mapping between arrow-types to data-types that the target flight end-point supports
+    private final String mapTinyInt;
+    private final String mapSmallInt;
+    private final String mapInt;
+    private final String mapBigInt;
+    private final String mapDate;
+    private final String mapTime;
+    private final String mapTimestamp;
+    private final String mapFloat4;
+    private final String mapFloat8;
+    private final String mapVarchar;
+    private final String mapLargeVarchar;
+    private final String mapDecimal;
+    private final String mapDecimal256;
+    private final String mapUInt1;
+    private final String mapUInt2;
+    private final String mapUInt4;
+    private final String mapUInt8;
+    private final String mapBit;
+
+    /**
+     * Construct a WriteStatement
+     * @param tableName - the name of the table
+     * @param dataSchema - the schema for the data
+     * @param arrowSchema - the arrow schema for the table
+     * @param columnQuote - the character for quoting columns
+     */
+    public WriteStatement(String tableName, StructType dataSchema, Schema arrowSchema, String columnQuote, Map&lt;String, String&gt; typeMapping) {
+<span class="nc" id="L175">        this(dataSchema, arrowSchema, typeMapping);</span>
+<span class="nc" id="L176">        this.stmt = String.format(&quot;insert into %s(%s) %s&quot;, tableName, String.join(&quot;,&quot;, WriteStatement.quote.apply(this.params, columnQuote)), WriteStatement.VAR_VALUES);</span>
+<span class="nc" id="L177">    }</span>
+
+    /**
+     * Construct a WriteStatement
+     * @param tableName - the name of the table
+     * @param mergeByColumns - the name of columns for merging by
+     * @param dataSchema - the schema for the data
+     * @param arrowSchema - the arrow schema for the table
+     * @param columnQuote - the character for quoting columns
+     */
+    public WriteStatement(String tableName, String[] mergeByColumns, StructType dataSchema, Schema arrowSchema, String columnQuote, Map&lt;String, String&gt; typeMapping) {
+<span class="nc" id="L188">        this(dataSchema, arrowSchema, typeMapping);</span>
+
+<span class="nc" id="L190">        Map&lt;String, Integer&gt; entries = new java.util.LinkedHashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L191" title="All 2 branches missed.">        for (String field: WriteStatement.quote.apply(this.params, columnQuote)) {</span>
+<span class="nc" id="L192">            entries.put(field, 0);</span>
+        }
+<span class="nc bnc" id="L194" title="All 2 branches missed.">        for (String field: WriteStatement.quote.apply(mergeByColumns, columnQuote)) {</span>
+<span class="nc" id="L195">            entries.put(field, 1);</span>
+        }
+<span class="nc bnc" id="L197" title="All 2 branches missed.">        String matchOn = String.join(&quot; and &quot;, entries.entrySet().stream().filter(e -&gt; e.getValue() == 1).map(e -&gt; String.format(&quot;t.%s = s.%s&quot;, e.getKey(), e.getKey())).toArray(String[]::new));</span>
+<span class="nc bnc" id="L198" title="All 2 branches missed.">        String setUpdate = String.join(&quot;,&quot;, entries.entrySet().stream().filter(e -&gt; e.getValue() == 0).map(e -&gt; String.format(&quot;%s = s.%s&quot;, e.getKey(), e.getKey())).toArray(String[]::new));</span>
+<span class="nc" id="L199">        String varInsert = String.join(&quot;,&quot;, entries.keySet().toArray(new String[0]));</span>
+<span class="nc" id="L200">        String valInsert = String.join(&quot;,&quot;, entries.keySet().stream().map(integer -&gt; String.format(&quot;s.%s&quot;, integer)).toArray(String[]::new));</span>
+<span class="nc" id="L201">        this.stmt = String.format(&quot;merge into %s t using (%s) s(%s) on %s when matched then update set %s when not matched then insert (%s) values(%s)&quot;, tableName, WriteStatement.VAR_VALUES, varInsert, matchOn, setUpdate, varInsert, valInsert);</span>
+<span class="nc" id="L202">    }</span>
+
+    /**
+     * Initialize properties with type mapping
+     * @param dataSchema the Spark data schema
+     * @param arrowSchema the Arrow schema
+     * @param typeMapping mapping from Arrow types to target SQL types
+     */
+<span class="nc" id="L210">    private WriteStatement(StructType dataSchema, Schema arrowSchema, Map&lt;String, String&gt; typeMapping) {</span>
+<span class="nc" id="L211">        this.dataSchema = dataSchema;</span>
+<span class="nc" id="L212">        this.arrowSchema = arrowSchema.toJson();</span>
+<span class="nc" id="L213">        this.params = dataSchema.fieldNames();</span>
+<span class="nc" id="L214">        this.converters = new java.util.HashMap&lt;&gt;();</span>
+
+<span class="nc" id="L216">        this.mapTinyInt = typeMapping.getOrDefault(&quot;tinyint&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L217">        this.mapSmallInt = typeMapping.getOrDefault(&quot;smallint&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L218">        this.mapInt = typeMapping.getOrDefault(&quot;int&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L219">        this.mapBigInt = typeMapping.getOrDefault(&quot;bigint&quot;, &quot;bigint&quot;);</span>
+<span class="nc" id="L220">        this.mapDate = typeMapping.getOrDefault(&quot;date&quot;, &quot;date&quot;);</span>
+<span class="nc" id="L221">        this.mapTime = typeMapping.getOrDefault(&quot;time&quot;, &quot;time&quot;);</span>
+<span class="nc" id="L222">        this.mapTimestamp = typeMapping.getOrDefault(&quot;timestamp&quot;, &quot;timestamp&quot;);</span>
+<span class="nc" id="L223">        this.mapFloat4 = typeMapping.getOrDefault(&quot;float4&quot;, &quot;float&quot;);</span>
+<span class="nc" id="L224">        this.mapFloat8 = typeMapping.getOrDefault(&quot;float8&quot;, &quot;double&quot;);</span>
+<span class="nc" id="L225">        this.mapVarchar = typeMapping.getOrDefault(VARCHAR_TYPE, VARCHAR_TYPE);</span>
+<span class="nc" id="L226">        this.mapLargeVarchar = typeMapping.getOrDefault(&quot;largevarchar&quot;, VARCHAR_TYPE);</span>
+<span class="nc" id="L227">        this.mapDecimal = typeMapping.getOrDefault(DECIMAL_TYPE, DECIMAL_TYPE);</span>
+<span class="nc" id="L228">        this.mapDecimal256 = typeMapping.getOrDefault(&quot;decimal256&quot;, DECIMAL_TYPE);</span>
+<span class="nc" id="L229">        this.mapUInt1 = typeMapping.getOrDefault(&quot;uint1&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L230">        this.mapUInt2 = typeMapping.getOrDefault(&quot;uint2&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L231">        this.mapUInt4 = typeMapping.getOrDefault(&quot;uint4&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L232">        this.mapUInt8 = typeMapping.getOrDefault(&quot;uint8&quot;, &quot;int&quot;);</span>
+<span class="nc" id="L233">        this.mapBit = typeMapping.getOrDefault(&quot;bit&quot;, &quot;boolean&quot;);</span>
+<span class="nc" id="L234">    }</span>
+
+    private void initialize() {
+<span class="nc" id="L237">        register(Types.MinorType.DATEDAY,</span>
+<span class="nc" id="L238">            (value, field, type) -&gt; formatTimestampDate(value, mapDate),</span>
+            TimestampType.class);
+<span class="nc" id="L240">        register(Types.MinorType.DATEDAY,</span>
+<span class="nc" id="L241">            (value, field, type) -&gt; formatDate(value, mapDate),</span>
+            DateType.class);
+<span class="nc" id="L243">        register(Types.MinorType.DATEMILLI,</span>
+<span class="nc" id="L244">            (value, field, type) -&gt; formatTimestampDate(value, mapDate),</span>
+            TimestampType.class);
+<span class="nc" id="L246">        register(Types.MinorType.DATEMILLI,</span>
+<span class="nc" id="L247">            (value, field, type) -&gt; formatDate(value, mapDate),</span>
+            DateType.class);
+<span class="nc" id="L249">        registerTimestamp(Types.MinorType.TIMESTAMPNANOTZ,</span>
+            TIMESTAMP_NANO_FORMAT, true);
+<span class="nc" id="L251">        registerTimestamp(Types.MinorType.TIMESTAMPMICROTZ,</span>
+            TIMESTAMP_MICRO_FORMAT, true);
+<span class="nc" id="L253">        registerTimestamp(Types.MinorType.TIMESTAMPSECTZ,</span>
+            TIMESTAMP_SECOND_FORMAT, true);
+<span class="nc" id="L255">        registerTimestamp(Types.MinorType.TIMESTAMPMILLITZ,</span>
+            TIMESTAMP_MILLI_FORMAT, true);
+<span class="nc" id="L257">        registerTimestamp(Types.MinorType.TIMESTAMPNANO,</span>
+            TIMESTAMP_NANO_FORMAT, false);
+<span class="nc" id="L259">        registerTimestamp(Types.MinorType.TIMESTAMPMICRO,</span>
+            TIMESTAMP_MICRO_FORMAT, false);
+<span class="nc" id="L261">        registerTimestamp(Types.MinorType.TIMESTAMPSEC,</span>
+            TIMESTAMP_SECOND_FORMAT, false);
+<span class="nc" id="L263">        registerTimestamp(Types.MinorType.TIMESTAMPMILLI,</span>
+            TIMESTAMP_MILLI_FORMAT, false);
+<span class="nc" id="L265">        register(Types.MinorType.TIMEMICRO,</span>
+<span class="nc" id="L266">            (value, field, type) -&gt; formatStringTime(value, TIME_MICRO_FORMAT, mapTime),</span>
+            StringType.class);
+<span class="nc" id="L268">        register(Types.MinorType.TIMEMICRO,</span>
+<span class="nc" id="L269">            (value, field, type) -&gt; formatTimestampTime(value, TIME_MICRO_FORMAT, mapTime),</span>
+            TimestampType.class);
+<span class="nc" id="L271">        register(Types.MinorType.TIMESEC,</span>
+<span class="nc" id="L272">            (value, field, type) -&gt; formatStringTime(value, TIME_SECOND_FORMAT, mapTime),</span>
+            StringType.class);
+<span class="nc" id="L274">        register(Types.MinorType.TIMESEC,</span>
+<span class="nc" id="L275">            (value, field, type) -&gt; formatTimestampTime(value, TIME_SECOND_FORMAT, mapTime),</span>
+            TimestampType.class);
+<span class="nc" id="L277">        register(Types.MinorType.TIMENANO,</span>
+<span class="nc" id="L278">            (value, field, type) -&gt; formatStringTime(value, TIME_NANO_FORMAT, mapTime),</span>
+            StringType.class);
+<span class="nc" id="L280">        register(Types.MinorType.TIMENANO,</span>
+<span class="nc" id="L281">            (value, field, type) -&gt; formatTimestampTime(value, TIME_NANO_FORMAT, mapTime),</span>
+            TimestampType.class);
+<span class="nc" id="L283">        register(Types.MinorType.TIMEMILLI,</span>
+<span class="nc" id="L284">            (value, field, type) -&gt; formatStringTime(value, TIME_MILLI_FORMAT, mapTime),</span>
+            StringType.class);
+<span class="nc" id="L286">        register(Types.MinorType.TIMEMILLI,</span>
+<span class="nc" id="L287">            (value, field, type) -&gt; formatTimestampTime(value, TIME_MILLI_FORMAT, mapTime),</span>
+            TimestampType.class);
+
+<span class="nc" id="L290">        register(</span>
+            Types.MinorType.BIGINT,
+            (value, field, type) -&gt;
+<span class="nc" id="L293">                castNumber(value, mapBigInt),</span>
+            ByteType.class,
+            ShortType.class,
+            IntegerType.class,
+            LongType.class);
+
+<span class="nc" id="L299">        register(</span>
+            Types.MinorType.FLOAT8,
+            (value, field, type) -&gt;
+<span class="nc" id="L302">                castNumber(value, mapFloat8),</span>
+            ByteType.class,
+            ShortType.class,
+            IntegerType.class,
+            LongType.class,
+            FloatType.class,
+            DoubleType.class);
+
+<span class="nc" id="L310">        register(</span>
+            Types.MinorType.INT,
+<span class="nc" id="L312">            (value, field, type) -&gt; castNumber(value, mapInt),</span>
+            ByteType.class, ShortType.class, IntegerType.class);
+<span class="nc" id="L314">        register(</span>
+            Types.MinorType.SMALLINT,
+<span class="nc" id="L316">            (value, field, type) -&gt; castNumber(value, mapSmallInt),</span>
+            ByteType.class, ShortType.class);
+<span class="nc" id="L318">        register(</span>
+            Types.MinorType.TINYINT,
+<span class="nc" id="L320">            (value, field, type) -&gt; castNumber(value, mapTinyInt),</span>
+            ByteType.class);
+<span class="nc" id="L322">        register(</span>
+            Types.MinorType.UINT1,
+<span class="nc" id="L324">            (value, field, type) -&gt; castNumber(value, mapUInt1),</span>
+            ByteType.class, ShortType.class);
+<span class="nc" id="L326">        register(</span>
+            Types.MinorType.UINT2,
+<span class="nc" id="L328">            (value, field, type) -&gt; castNumber(value, mapUInt2),</span>
+            ByteType.class, ShortType.class);
+<span class="nc" id="L330">        register(</span>
+            Types.MinorType.UINT4,
+<span class="nc" id="L332">            (value, field, type) -&gt; castNumber(value, mapUInt4),</span>
+            ByteType.class, ShortType.class, IntegerType.class);
+<span class="nc" id="L334">        register(</span>
+            Types.MinorType.UINT8,
+<span class="nc" id="L336">            (value, field, type) -&gt; castNumber(value, mapUInt8),</span>
+            ByteType.class, ShortType.class, IntegerType.class, LongType.class);
+<span class="nc" id="L338">        register(</span>
+            Types.MinorType.FLOAT4,
+<span class="nc" id="L340">            (value, field, type) -&gt; castNumber(value, mapFloat4),</span>
+            ByteType.class, ShortType.class, IntegerType.class,
+            LongType.class, FloatType.class, DoubleType.class);
+<span class="nc" id="L343">        register(</span>
+            Types.MinorType.DECIMAL,
+<span class="nc" id="L345">            (value, field, type) -&gt; castNumber(value, mapDecimal),</span>
+            ByteType.class, ShortType.class, IntegerType.class,
+            LongType.class, FloatType.class, DoubleType.class, DecimalType.class);
+<span class="nc" id="L348">        register(</span>
+            Types.MinorType.DECIMAL256,
+<span class="nc" id="L350">            (value, field, type) -&gt; castNumber(value, mapDecimal256),</span>
+            ByteType.class, ShortType.class, IntegerType.class,
+            LongType.class, FloatType.class, DoubleType.class, DecimalType.class);
+
+<span class="nc" id="L354">        register(</span>
+            Types.MinorType.VARCHAR,
+            (value, field, type) -&gt;
+<span class="nc" id="L357">                primitiveToVarchar(value, mapVarchar),</span>
+            StringType.class,
+            BooleanType.class,
+            ByteType.class,
+            ShortType.class,
+            IntegerType.class,
+            LongType.class,
+            FloatType.class,
+            DoubleType.class,
+            DateType.class,
+            TimestampType.class);
+
+<span class="nc" id="L369">        register(</span>
+            Types.MinorType.LARGEVARCHAR,
+            (value, field, type) -&gt;
+<span class="nc" id="L372">                primitiveToVarchar(value, mapLargeVarchar),</span>
+            StringType.class, BooleanType.class, ByteType.class, ShortType.class,
+            IntegerType.class, LongType.class, FloatType.class, DoubleType.class,
+            DateType.class, TimestampType.class, DecimalType.class);
+<span class="nc" id="L376">        register(</span>
+            Types.MinorType.VARCHAR,
+<span class="nc" id="L378">            (value, field, type) -&gt; complexToVarchar(value, type, mapVarchar),</span>
+            MapType.class, ArrayType.class, StructType.class);
+<span class="nc" id="L380">        register(</span>
+            Types.MinorType.LARGEVARCHAR,
+<span class="nc" id="L382">            (value, field, type) -&gt; complexToVarchar(value, type, mapLargeVarchar),</span>
+            MapType.class, ArrayType.class, StructType.class);
+<span class="nc" id="L384">        register(</span>
+            Types.MinorType.BIT,
+<span class="nc" id="L386">            (value, field, type) -&gt; booleanToBit(value, mapBit),</span>
+            BooleanType.class);
+<span class="nc" id="L388">        register(</span>
+            Types.MinorType.BIT,
+<span class="nc" id="L390">            (value, field, type) -&gt; stringToBit(value, mapBit),</span>
+            StringType.class);
+<span class="nc" id="L392">        register(</span>
+            Types.MinorType.BIT,
+<span class="nc" id="L394">            (value, field, type) -&gt; numberToBit(value, mapBit),</span>
+            ByteType.class, ShortType.class, IntegerType.class, LongType.class,
+            FloatType.class, DoubleType.class, DecimalType.class);
+<span class="nc" id="L397">    }</span>
+
+    /**
+     * Converts a numeric value to a typed SQL literal.
+     *
+     * @param value source value
+     * @param targetType target SQL type
+     * @return SQL literal
+     */
+    static String castNumber(
+        Object value,
+        String targetType) {
+<span class="fc" id="L409">        return String.format(</span>
+            CAST_FORMAT,
+<span class="fc bfc" id="L411" title="All 2 branches covered.">            value == null ? &quot;null&quot; : value,</span>
+            targetType);
+    }
+
+    /** Converts a primitive value to a SQL string literal. */
+    static String primitiveToVarchar(Object value, String targetType) {
+<span class="fc bfc" id="L417" title="All 2 branches covered.">        if (value == null) {</span>
+<span class="fc" id="L418">            return String.format(CAST_FORMAT, &quot;null&quot;, targetType);</span>
+        }
+<span class="fc" id="L420">        return String.format(&quot;'%s'&quot;, value.toString().replace(&quot;'&quot;, &quot;''&quot;));</span>
+    }
+
+    /** Converts a complex Spark value to a SQL string literal. */
+    private static String complexToVarchar(
+        Object value,
+        DataType dataType,
+        String targetType) {
+<span class="nc bnc" id="L428" title="All 2 branches missed.">        if (value == null) {</span>
+<span class="nc" id="L429">            return String.format(CAST_FORMAT, &quot;null&quot;, targetType);</span>
+        }
+<span class="nc" id="L431">        return String.format(&quot;'%s'&quot;, toJson.apply(value, dataType).replace(&quot;'&quot;, &quot;''&quot;));</span>
+    }
+
+    /** Converts a boolean value to a typed SQL literal. */
+    static String booleanToBit(Object value, String targetType) {
+<span class="fc" id="L436">        return castNumber(value, targetType);</span>
+    }
+
+    /** Converts a numeric value to a typed boolean SQL literal. */
+    static String numberToBit(Object value, String targetType) {
+<span class="fc bfc" id="L441" title="All 2 branches covered.">        Object literal = value == null</span>
+<span class="fc" id="L442">            ? null</span>
+<span class="fc bfc" id="L443" title="All 2 branches covered.">            : ((Number) value).doubleValue() != 0;</span>
+<span class="fc" id="L444">        return castNumber(literal, targetType);</span>
+    }
+
+    /** Converts a string value to a typed boolean SQL literal. */
+    static String stringToBit(Object value, String targetType) {
+<span class="pc bpc" id="L449" title="1 of 2 branches missed.">        Object literal = value == null</span>
+<span class="nc" id="L450">            ? null</span>
+<span class="fc" id="L451">            : Boolean.parseBoolean(value.toString());</span>
+<span class="fc" id="L452">        return castNumber(literal, targetType);</span>
+    }
+
+    /** Formats a textual time value as a typed SQL literal. */
+    private static String formatStringTime(
+        Object value,
+        DateTimeFormatter formatter,
+        String targetType) {
+<span class="nc bnc" id="L460" title="All 2 branches missed.">        String formatted = value == null</span>
+<span class="nc" id="L461">            ? &quot;null&quot;</span>
+<span class="nc" id="L462">            : LocalTime.parse(value.toString()).format(formatter);</span>
+<span class="nc" id="L463">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Formats a Spark timestamp value as a typed time SQL literal. */
+    private static String formatTimestampTime(
+        Object value,
+        DateTimeFormatter formatter,
+        String targetType) {
+<span class="nc bnc" id="L471" title="All 2 branches missed.">        String formatted = value == null</span>
+<span class="nc" id="L472">            ? &quot;null&quot;</span>
+<span class="nc" id="L473">            : DateTimeUtils.microsToLocalDateTime(longValue(value)).format(formatter);</span>
+<span class="nc" id="L474">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Formats a Spark timestamp value as a typed date SQL literal. */
+    private static String formatTimestampDate(Object value, String targetType) {
+<span class="nc bnc" id="L479" title="All 2 branches missed.">        String formatted = value == null</span>
+<span class="nc" id="L480">            ? &quot;null&quot;</span>
+<span class="nc" id="L481">            : DateTimeUtils.microsToLocalDateTime(longValue(value)).format(DATE_FORMAT);</span>
+<span class="nc" id="L482">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Formats a Spark date value as a typed date SQL literal. */
+    private static String formatDate(Object value, String targetType) {
+<span class="nc bnc" id="L487" title="All 2 branches missed.">        String formatted = value == null</span>
+<span class="nc" id="L488">            ? &quot;null&quot;</span>
+<span class="nc" id="L489">            : DateTimeUtils.daysToLocalDate(intValue(value)).format(DATE_FORMAT);</span>
+<span class="nc" id="L490">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Formats a Spark timestamp value as a typed timestamp SQL literal. */
+    private static String formatTimestamp(
+        Object value,
+        Field field,
+        DateTimeFormatter formatter,
+        String targetType,
+        boolean timezoneAware) {
+<span class="nc bnc" id="L500" title="All 2 branches missed.">        if (value == null) {</span>
+<span class="nc" id="L501">            return castQuoted(&quot;null&quot;, targetType);</span>
+        }
+<span class="nc" id="L503">        long micros = longValue(value);</span>
+<span class="nc bnc" id="L504" title="All 2 branches missed.">        if (timezoneAware) {</span>
+<span class="nc" id="L505">            micros = microsToMicrosTz(micros, field);</span>
+        }
+<span class="nc" id="L507">        String formatted = DateTimeUtils.microsToLocalDateTime(micros).format(formatter);</span>
+<span class="nc" id="L508">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Formats a Spark date value as a typed timestamp SQL literal. */
+    private static String formatDateTimestamp(
+        Object value,
+        Field field,
+        DateTimeFormatter formatter,
+        String targetType,
+        boolean timezoneAware) {
+<span class="nc bnc" id="L518" title="All 2 branches missed.">        if (value == null) {</span>
+<span class="nc" id="L519">            return castQuoted(&quot;null&quot;, targetType);</span>
+        }
+<span class="nc" id="L521">        int days = intValue(value);</span>
+<span class="nc bnc" id="L522" title="All 2 branches missed.">        String formatted = timezoneAware</span>
+<span class="nc" id="L523">            ? DateTimeUtils.microsToLocalDateTime(</span>
+<span class="nc" id="L524">                daysToMicrosTz(days, field)).format(formatter)</span>
+<span class="nc" id="L525">            : DateTimeUtils.daysToLocalDate(days).atStartOfDay().format(formatter);</span>
+<span class="nc" id="L526">        return castQuoted(formatted, targetType);</span>
+    }
+
+    /** Wraps a quoted value in a typed SQL cast. */
+    private static String castQuoted(String value, String targetType) {
+<span class="nc" id="L531">        return String.format(&quot;cast('%s' as %s)&quot;, value, targetType);</span>
+    }
+
+    /** Converts an object to a long value. */
+    private static long longValue(Object value) {
+<span class="nc bnc" id="L536" title="All 2 branches missed.">        return value instanceof Number number</span>
+<span class="nc" id="L537">            ? number.longValue()</span>
+<span class="nc" id="L538">            : Long.parseLong(value.toString());</span>
+    }
+
+    /** Converts an object to an integer value. */
+    private static int intValue(Object value) {
+<span class="nc bnc" id="L543" title="All 2 branches missed.">        return value instanceof Number number</span>
+<span class="nc" id="L544">            ? number.intValue()</span>
+<span class="nc" id="L545">            : Integer.parseInt(value.toString());</span>
+    }
+
+    /**
+     * Get the data schema
+     * @return - the data schema
+     */
+    public StructType getDataSchema() {
+<span class="nc" id="L553">        return this.dataSchema;</span>
+    }
+
+    /**
+     * Get the arrow-schema
+     * @return - arrow schema
+     * @throws IOException - thrown when the arrow-schema is invalid
+     */
+    public Schema getArrowSchema() throws IOException {
+<span class="nc" id="L562">        return Schema.fromJSON(this.arrowSchema);</span>
+    }
+
+    /**
+     * Get the statement
+     * @return - the merge into or insert into statement
+     */
+    public String getStatement() {
+<span class="nc" id="L570">        return this.stmt.replace(WriteStatement.VAR_VALUES, String.format(&quot;values(%s)&quot;, String.join(&quot;,&quot;, Arrays.stream(this.params).map(param -&gt; &quot;?&quot;).toArray(String[]::new))));</span>
+    }
+
+    /**
+     * Fill the statment with data
+     * @param rows - the rows of data
+     * @param arrowFields - the fields of output
+     * @return - a statement with data
+     */
+    public String fillStatement(InternalRow[] rows, Field[] arrowFields) {
+<span class="nc" id="L580">        Function&lt;String, Optional&lt;Field&gt;&gt; find = (name) -&gt; Arrays.stream(arrowFields).filter(x -&gt; x.getName().equalsIgnoreCase(name)).findFirst();</span>
+<span class="nc" id="L581">        StructField[] dataFields = this.dataSchema.fields();</span>
+<span class="nc" id="L582">        Object[] columns = IntStream.range(0, dataFields.length).mapToObj(idx -&gt; {</span>
+<span class="nc" id="L583">            Optional&lt;Field&gt; arrowField = find.apply(dataFields[idx].name());</span>
+<span class="nc bnc" id="L584" title="All 2 branches missed.">            if (arrowField.isEmpty()) {</span>
+<span class="nc" id="L585">                throw new RuntimeException(&quot;The arrow field is not available.&quot;);</span>
+            }
+<span class="nc" id="L587">            return this.fillColumns(rows, idx, dataFields[idx].dataType(), arrowField.get());</span>
+<span class="nc" id="L588">        }).toArray(Object[]::new);</span>
+
+<span class="nc" id="L590">        String[] values = IntStream.range(0, rows.length).mapToObj(i -&gt; String.format(&quot;(%s)&quot;, String.join(&quot;,&quot;, Arrays.stream(columns).map(column -&gt; ((String[]) column)[i]).toArray(String[]::new)))).toArray(String[]::new);</span>
+<span class="nc" id="L591">        return this.stmt.replace(WriteStatement.VAR_VALUES, String.format(&quot;values%s&quot;, String.join(&quot;,&quot;, values)));</span>
+    }
+
+    /**
+     * Convert values of one column to SQL strings
+     * @param rows source rows
+     * @param idxColumn column index
+     * @param dataType Spark data type
+     * @param arrowField Arrow field definition
+     * @return array of SQL string values
+     */
+    private String[] fillColumns(InternalRow[] rows, int idxColumn, DataType dataType, Field arrowField) {
+<span class="nc" id="L603">        ConverterKey key = converterKey(</span>
+            dataType,
+<span class="nc" id="L605">            Types.getMinorTypeForArrowType(arrowField.getType()));</span>
+<span class="nc bnc" id="L606" title="All 2 branches missed.">        if (!this.converters.containsKey(key)) {</span>
+<span class="nc" id="L607">            this.initialize();</span>
+        }
+<span class="nc" id="L609">        Execute&lt;Object, Field, DataType, String&gt; converter = this.converters.get(key);</span>
+<span class="nc bnc" id="L610" title="All 2 branches missed.">        if (converter == null) {</span>
+<span class="nc" id="L611">            throw new IllegalArgumentException(</span>
+                &quot;Unsupported Spark/Arrow type combination: &quot; + key);
+        }
+<span class="nc" id="L614">        return Arrays.stream(rows)</span>
+<span class="nc" id="L615">            .map(row -&gt; converter.apply(row.get(idxColumn, dataType), arrowField, dataType))</span>
+<span class="nc" id="L616">            .toArray(String[]::new);</span>
+    }
+
+    /** Converts timestamp microseconds to the Arrow field timezone. */
+    private static long microsToMicrosTz(long micros, Field arrowField) {
+<span class="nc" id="L621">        return DateTimeUtils.convertTz(</span>
+            micros,
+<span class="nc" id="L623">            ZoneId.systemDefault(),</span>
+<span class="nc" id="L624">            ZoneId.of(((ArrowType.Timestamp) arrowField.getFieldType().getType()).getTimezone()));</span>
+    }
+
+    /** Converts date days to microseconds in the Arrow field timezone. */
+    private static long daysToMicrosTz(int days, Field arrowField) {
+<span class="nc" id="L629">        return DateTimeUtils.daysToMicros(</span>
+            days,
+<span class="nc" id="L631">            ZoneId.of(((ArrowType.Timestamp) arrowField.getFieldType().getType()).getTimezone()));</span>
+    }
+    //to-json
+<span class="fc" id="L634">    private static final BiFunction&lt;Object, DataType, String&gt; toJson = (o, dt) -&gt; {</span>
+<span class="nc" id="L635">        StringBuilder sb = new StringBuilder();</span>
+        try {
+<span class="nc bnc" id="L637" title="All 4 branches missed.">            if (dt instanceof StructType structType &amp;&amp; o instanceof UnsafeRow data) {</span>
+<span class="nc" id="L638">                StructField[] fields = structType.fields();</span>
+<span class="nc" id="L639">                sb.append(String.format(&quot;{ %s }&quot;, String.join(&quot;, &quot;, IntStream.range(0, fields.length).mapToObj(idx -&gt; String.format(&quot;\&quot;%s\&quot;: %s&quot;, fields[idx].name(), WriteStatement.toJson.apply(data.get(idx, fields[idx].dataType()), fields[idx].dataType()))).toArray(String[]::new))));</span>
+<span class="nc bnc" id="L640" title="All 4 branches missed.">            } else if (dt instanceof MapType mt &amp;&amp; o instanceof UnsafeMapData data) {</span>
+<span class="nc" id="L641">                UnsafeArrayData keys = data.keyArray();</span>
+<span class="nc" id="L642">                UnsafeArrayData values = data.valueArray();</span>
+<span class="nc" id="L643">                sb.append(String.format(&quot;{ \&quot;map\&quot;: [%s] }&quot;, String.join(&quot;, &quot;, IntStream.range(0, data.numElements()).mapToObj(idx -&gt; String.format(&quot;{ \&quot;key\&quot;: %s, \&quot;value\&quot;: %s }&quot;, WriteStatement.toJson.apply(keys.get(idx, mt.keyType()), mt.keyType()), WriteStatement.toJson.apply(values.get(idx, mt.valueType()), mt.valueType()))).toArray(String[]::new))));</span>
+<span class="nc bnc" id="L644" title="All 4 branches missed.">            } else if (dt instanceof ArrayType at &amp;&amp; o instanceof UnsafeArrayData data) {</span>
+<span class="nc" id="L645">                sb.append(String.format(&quot;[%s]&quot;, String.join(&quot;, &quot;, IntStream.range(0, data.numElements()).mapToObj(idx -&gt; WriteStatement.toJson.apply(data.get(idx, at.elementType()), at.elementType())).toArray(String[]::new))));</span>
+            } else {
+<span class="nc" id="L647">                sb.append(String.format(&quot;\&quot;%s\&quot;&quot;, o));</span>
+            }
+<span class="nc" id="L649">        } catch (Exception e) {</span>
+<span class="nc" id="L650">            LoggerFactory.getLogger(WriteStatement.class).warn(e.getMessage() + Arrays.toString(e.getStackTrace()));</span>
+<span class="nc" id="L651">        }</span>
+<span class="nc" id="L652">        return sb.toString().replace(&quot;'&quot;, &quot;''&quot;);</span>
+    };
+    //quote all fields in the collection
+<span class="pc" id="L655">    private static final BiFunction&lt;String[], String, String[]&gt; quote = (fields, quote) -&gt; Arrays.stream(fields).map(field -&gt; String.format(&quot;%s%s%s&quot;, quote, field, quote)).toArray(String[]::new);</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

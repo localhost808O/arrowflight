@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightTable.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark</a> &gt; <span class="el_source">FlightTable.java</span></div><h1>FlightTable.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark;
+
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.write.WriteProtocol;
+import net.surpin.data.arrowflight.client.write.PartitionBehavior;
+import net.surpin.data.arrowflight.client.model.Table;
+import net.surpin.data.arrowflight.client.write.WriteBehavior;
+import net.surpin.data.arrowflight.client.spark.read.FlightScanBuilder;
+import net.surpin.data.arrowflight.client.spark.write.FlightWriteBuilder;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.spark.sql.connector.catalog.SupportsRead;
+import org.apache.spark.sql.connector.catalog.SupportsWrite;
+import org.apache.spark.sql.connector.catalog.TableCapability;
+import org.apache.spark.sql.connector.read.ScanBuilder;
+import org.apache.spark.sql.connector.write.LogicalWriteInfo;
+import org.apache.spark.sql.connector.write.WriteBuilder;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.CaseInsensitiveStringMap;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+/**
+ * Describes the flight-table
+ */
+public class FlightTable implements org.apache.spark.sql.connector.catalog.Table, SupportsRead, SupportsWrite {
+    //the default type-mapping
+    private static final String TYPE_MAPPING_DEFAULT = &quot;BIT:BOOLEAN;&quot;
+        + &quot;LARGEVARCHAR:VARCHAR; VARCHAR:VARCHAR;&quot;
+        + &quot;TINYINT:INT; SMALLINT:INT; UINT1:INT; UINT2:INT; UINT4:INT; UINT8:INT; INT:INT; BIGINT:BIGINT;&quot;
+        + &quot;FLOAT4:FLOAT; FLOAT8:DOUBLE; DECIMAL:DECIMAL; DECIMAL256:DECIMAL;&quot;
+        + &quot;DATE:DATE; TIME:TIME; TIMESTAMP:TIMESTAMP&quot;;
+    //the number of partitions when reading and writing
+    private static final String PARTITION_SIZE = &quot;partition.size&quot;;
+    //the option keys for partitioning
+    private static final String PARTITION_HASH_FUN = &quot;partition.hashFunc&quot;;
+    private static final String PARTITION_BY_COLUMN = &quot;partition.byColumn&quot;;
+    private static final String PARTITION_LOWER_BOUND = &quot;partition.lowerBound&quot;;
+    private static final String PARTITION_UPPER_BOUND = &quot;partition.upperBound&quot;;
+    private static final String PARTITION_PREDICATE = &quot;partition.predicate&quot;;
+    private static final String PARTITION_PREDICATES = &quot;partition.predicates&quot;;
+
+    //write protocol
+    private static final String WRITE_PROTOCOL = &quot;write.protocol&quot;;
+    //type mapping
+    private static final String WRITE_TYPE_MAPPING = &quot;write.typeMapping&quot;;
+    //the batch-size for writing
+    private static final String BATCH_SIZE = &quot;batch.size&quot;;
+    //merge by keys
+    private static final String MERGE_BY_COLUMN = &quot;merge.byColumn&quot;;
+    private static final String MERGE_BY_COLUMNS = &quot;merge.byColumns&quot;;
+
+    //the configuration of remote flight service
+    private final Configuration configuration;
+    //the table description
+    private final Table table;
+
+    //the table capabilities
+<span class="nc" id="L61">    private final Set&lt;TableCapability&gt; capabilities = new HashSet&lt;&gt;();</span>
+
+    /**
+     * Construct a flight-table
+     * @param configuration  - the configuration of remote flight-service
+     * @param table - the table instance pointing to a remote flight-table
+     */
+<span class="nc" id="L68">    public FlightTable(Configuration configuration, Table table) {</span>
+<span class="nc" id="L69">        this.configuration = configuration;</span>
+<span class="nc" id="L70">        this.table = table;</span>
+
+        //the data-source supports batch read/write, truncate the table
+<span class="nc" id="L73">        this.capabilities.add(TableCapability.ACCEPT_ANY_SCHEMA);</span>
+<span class="nc" id="L74">        this.capabilities.add(TableCapability.BATCH_READ);</span>
+<span class="nc" id="L75">        this.capabilities.add(TableCapability.BATCH_WRITE);</span>
+<span class="nc" id="L76">        this.capabilities.add(TableCapability.TRUNCATE);</span>
+<span class="nc" id="L77">        this.capabilities.add(TableCapability.STREAMING_WRITE);</span>
+<span class="nc" id="L78">    }</span>
+
+    /**
+     * For Table interface
+     * @return - the name of the table
+     */
+    @Override
+    public String name() {
+<span class="nc" id="L86">        return this.table.getName();</span>
+    }
+
+    /**
+     * For Table interface
+     * @return - the schema for Spark
+     */
+    @Override
+    public StructType schema() {
+<span class="nc" id="L95">        return this.table.getSparkSchema();</span>
+    }
+
+    /**
+     * For Table interface
+     * @return - the capabilities of this table
+     */
+    @Override
+    public Set&lt;TableCapability&gt; capabilities() {
+<span class="nc" id="L104">        return this.capabilities;</span>
+    }
+
+    /**
+     * For SupportsRead interface
+     * @param options - the options from the api call
+     * @return - A scan builder
+     */
+    @Override
+    public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
+        // ScanBuilder pushdown mutates Table's statement/schema/endpoints. Keep that
+        // state private to this scan so concurrent Thrift queries cannot overwrite
+        // one another's tickets or projected schemas.
+<span class="nc" id="L117">        Table scanTable = this.table.newScan();</span>
+
+        //the partitioning behavior
+<span class="nc" id="L120">        PartitionBehavior partitionBehavior = new PartitionBehavior(</span>
+<span class="nc" id="L121">            options.getOrDefault(FlightTable.PARTITION_HASH_FUN, &quot;hash&quot;), options.getOrDefault(FlightTable.PARTITION_BY_COLUMN, &quot;&quot;),</span>
+<span class="nc" id="L122">            Integer.parseInt(options.getOrDefault(FlightTable.PARTITION_SIZE, &quot;6&quot;)),</span>
+<span class="nc" id="L123">            options.getOrDefault(FlightTable.PARTITION_LOWER_BOUND, &quot;&quot;), options.getOrDefault(FlightTable.PARTITION_UPPER_BOUND, &quot;&quot;),</span>
+<span class="nc" id="L124">            (String[]) ArrayUtils.addAll(</span>
+                //filter out any partition.predicates for only partition.predicate
+<span class="nc" id="L126">                options.keySet().stream()</span>
+<span class="nc bnc" id="L127" title="All 4 branches missed.">                    .filter(k -&gt; !k.equalsIgnoreCase(FlightTable.PARTITION_PREDICATES) &amp;&amp; k.toLowerCase().startsWith(FlightTable.PARTITION_PREDICATE.toLowerCase()))</span>
+<span class="nc bnc" id="L128" title="All 2 branches missed.">                    .map(k -&gt; options.getOrDefault(k, &quot;&quot;)).filter(p -&gt; !p.isEmpty()).toArray(String[]::new),</span>
+                //combine with partition.predicates
+<span class="nc bnc" id="L130" title="All 2 branches missed.">                options.containsKey(FlightTable.PARTITION_PREDICATES) ? options.get(FlightTable.PARTITION_PREDICATES).split(&quot;[;|,]&quot;) : new String[0]</span>
+            )
+        );
+<span class="nc" id="L133">        return new FlightScanBuilder(this.configuration, scanTable, partitionBehavior);</span>
+    }
+
+    /**
+     * For SupportsWrite interface
+     * @param logicalWriteInfo - the logical information for the writing
+     * @return - A write builder
+     */
+    @Override
+    public WriteBuilder newWriteBuilder(LogicalWriteInfo logicalWriteInfo) {
+<span class="nc bnc" id="L143" title="All 2 branches missed.">        if (this.table.getSchema() == null) {</span>
+<span class="nc" id="L144">            this.table.initializeSchema(this.configuration);</span>
+        }
+        //validate the schema - fields being written must be in the table schema
+<span class="nc" id="L147">        Function&lt;String, Boolean&gt; exists = (field) -&gt; this.table.getSparkSchema().exists(sf -&gt; sf.name().equalsIgnoreCase(field));</span>
+<span class="nc bnc" id="L148" title="All 2 branches missed.">        if (!Arrays.stream(logicalWriteInfo.schema().fields()).map(sf -&gt; exists.apply(sf.name())).reduce((x, y) -&gt; x &amp; y).orElse(false)) {</span>
+<span class="nc" id="L149">            throw new RuntimeException(&quot;The schema of the dataframe being written is not compatible with the schema of the underlying table.&quot;);</span>
+        }
+
+        //construct write-behavior
+<span class="nc" id="L153">        CaseInsensitiveStringMap options = logicalWriteInfo.options();</span>
+<span class="nc" id="L154">        WriteBehavior writeBehavior = new WriteBehavior(</span>
+            //by default, the write-protocol is submitting literal sql statements
+<span class="nc bnc" id="L156" title="All 2 branches missed.">            options.getOrDefault(FlightTable.WRITE_PROTOCOL, &quot;literal-sql&quot;).equalsIgnoreCase(&quot;prepared-sql&quot;) ? WriteProtocol.PREPARED_SQL : WriteProtocol.LITERAL_SQL,</span>
+            //by default, the batch-size is 10,240.
+<span class="nc" id="L158">            Integer.parseInt(options.getOrDefault(FlightTable.BATCH_SIZE, &quot;1024&quot;)),</span>
+<span class="nc" id="L159">                ArrayUtils.addAll(</span>
+                    //filter out any merge.ByColumns for only merge.ByColumn
+<span class="nc" id="L161">                    options.keySet().stream()</span>
+<span class="nc bnc" id="L162" title="All 4 branches missed.">                            .filter(k -&gt; !k.equalsIgnoreCase(FlightTable.MERGE_BY_COLUMNS) &amp;&amp; k.toLowerCase().startsWith(FlightTable.MERGE_BY_COLUMN.toLowerCase()))</span>
+<span class="nc bnc" id="L163" title="All 2 branches missed.">                        .map(k -&gt; options.getOrDefault(k, &quot;&quot;)).filter(p -&gt; !p.isEmpty()).toArray(String[]::new),</span>
+                    //combine with merge.ByColumns
+<span class="nc bnc" id="L165" title="All 2 branches missed.">                    options.containsKey(FlightTable.MERGE_BY_COLUMNS) ? options.get(FlightTable.MERGE_BY_COLUMNS).split(&quot;[;|,]&quot;) : new String[0]</span>
+                ),
+<span class="nc" id="L167">            Arrays.stream(options.getOrDefault(FlightTable.WRITE_TYPE_MAPPING, FlightTable.TYPE_MAPPING_DEFAULT).split(&quot;;&quot;))</span>
+<span class="nc" id="L168">                .map(tm -&gt; Arrays.stream(tm.split(&quot;:&quot;)).map(s -&gt; s.trim().toLowerCase()).toArray(String[]::new)).collect(Collectors.toMap(s -&gt; s[0], s -&gt; s[1]))</span>
+        );
+<span class="nc" id="L170">        return new FlightWriteBuilder(this.configuration, this.table, logicalWriteInfo.schema(), writeBehavior);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

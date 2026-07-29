@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightSource.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark</a> &gt; <span class="el_source">FlightSource.java</span></div><h1>FlightSource.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark;
+
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.model.Table;
+import org.apache.spark.sql.SQLContext;
+import org.apache.spark.sql.connector.catalog.TableProvider;
+import org.apache.spark.sql.connector.expressions.Transform;
+import org.apache.spark.sql.sources.BaseRelation;
+import org.apache.spark.sql.sources.DataSourceRegister;
+import org.apache.spark.sql.sources.RelationProvider;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.CaseInsensitiveStringMap;
+
+import scala.collection.JavaConverters;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Define the flight-source which supports both read from and write to remote flight-service
+ */
+<span class="nc" id="L22">public class FlightSource implements TableProvider, DataSourceRegister, RelationProvider {</span>
+    //the option keys for connection
+    private static final String HOST = &quot;host&quot;;
+    private static final String PORT = &quot;port&quot;;
+    private static final String TLS_ENABLED = &quot;tls.enabled&quot;;
+    private static final String TLS_VERIFY_SERVER = &quot;tls.verifyServer&quot;;
+    private static final String TLS_TRUSTSTORE_JKS = &quot;tls.truststore.jksFile&quot;;
+    private static final String TLS_TRUSTSTORE_PASS = &quot;tls.truststore.pass&quot;;
+    //the option keys for account
+    private static final String USER = &quot;user&quot;;
+    private static final String PASSWORD = &quot;password&quot;;
+    private static final String BEARER_TOKEN = &quot;bearerToken&quot;;
+
+    //the option keys for table
+    private static final String TABLE = &quot;table&quot;;
+    //the quote for field in case a field containing irregular characters, such as -
+    private static final String COLUMN_QUOTE = &quot;column.quote&quot;;
+
+    //Managing Workloads
+    public static final String KEY_DEFAULT_SCHEMA = &quot;default.schema&quot;;
+    public static final String KEY_ROUTING_TAG = &quot;routing.tag&quot;;
+    public static final String KEY_ROUTING_QUEUE = &quot;routing.queue&quot;;
+
+    //Retry &amp; timeout
+    private static final String KEY_MAX_RETRIES = &quot;client.maxRetries&quot;;
+    private static final String KEY_RETRY_BACKOFF_MS = &quot;client.retryBackoffMs&quot;;
+    private static final String KEY_CONNECT_TIMEOUT_MS = &quot;client.connectTimeoutMs&quot;;
+
+    //the service configuration
+<span class="nc" id="L51">    private Configuration configuration = null;</span>
+    //the name of the table
+<span class="nc" id="L53">    private Table tableName = null;</span>
+
+    /**
+     * Infer schema from the options
+     * @param options - the options container
+     * @return - the schema inferred
+     */
+    @Override
+    public StructType inferSchema(CaseInsensitiveStringMap options) {
+<span class="nc" id="L62">        this.probeOptions(options, true);</span>
+<span class="nc" id="L63">        return this.tableName.getSparkSchema();</span>
+    }
+
+    /**
+     * Extract and validate connection options from the provided options map
+     * @param options - the case-insensitive options map
+     */
+    private void probeOptions(CaseInsensitiveStringMap options, boolean initialize) {
+        //host &amp; port
+<span class="nc" id="L72">        String host = options.getOrDefault(FlightSource.HOST, &quot;&quot;);</span>
+<span class="nc" id="L73">        int port = Integer.parseInt(options.getOrDefault(FlightSource.PORT, &quot;32010&quot;));</span>
+        //account
+<span class="nc" id="L75">        String user = options.getOrDefault(FlightSource.USER, &quot;&quot;);</span>
+<span class="nc" id="L76">        String password = options.getOrDefault(FlightSource.PASSWORD, &quot;&quot;);</span>
+<span class="nc" id="L77">        String bearerToken = options.getOrDefault(FlightSource.BEARER_TOKEN, &quot;&quot;);</span>
+        //validation - host, user &amp; password cannot be empty
+<span class="nc bnc" id="L79" title="All 8 branches missed.">        if (host.isEmpty() || user.isEmpty() || (password.isEmpty() &amp;&amp; bearerToken.isEmpty())) {</span>
+<span class="nc" id="L80">            throw new RuntimeException(&quot;The host, user and (password or access-token) are all mandatory.&quot;);</span>
+        }
+        //tls configuration
+<span class="nc" id="L83">        boolean tlsEnabled = Boolean.parseBoolean(options.getOrDefault(FlightSource.TLS_ENABLED, &quot;false&quot;));</span>
+<span class="nc" id="L84">        boolean tlsVerify = Boolean.parseBoolean(options.getOrDefault(FlightSource.TLS_VERIFY_SERVER, &quot;true&quot;));</span>
+<span class="nc" id="L85">        String truststoreJks = options.getOrDefault(FlightSource.TLS_TRUSTSTORE_JKS, &quot;&quot;);</span>
+<span class="nc" id="L86">        String truststorePass = options.getOrDefault(FlightSource.TLS_TRUSTSTORE_PASS, &quot;&quot;);</span>
+        //set up the configuration object
+<span class="nc bnc" id="L88" title="All 4 branches missed.">        this.configuration = (truststoreJks != null &amp;&amp; !truststoreJks.isEmpty())</span>
+<span class="nc bnc" id="L89" title="All 4 branches missed.">            ? new Configuration(host, port, truststoreJks, truststorePass, user, password, bearerToken) : new Configuration(host, port, tlsEnabled, tlsEnabled &amp;&amp; tlsVerify, user, password, bearerToken);</span>
+
+        //set the schema path, routing tag &amp; queue if any to manage work-loads
+<span class="nc" id="L92">        this.configuration.setDefaultSchema(options.getOrDefault(FlightSource.KEY_DEFAULT_SCHEMA, &quot;&quot;));</span>
+<span class="nc" id="L93">        this.configuration.setRoutingTag(options.getOrDefault(FlightSource.KEY_ROUTING_TAG, &quot;&quot;));</span>
+<span class="nc" id="L94">        this.configuration.setRoutingQueue(options.getOrDefault(FlightSource.KEY_ROUTING_QUEUE, &quot;&quot;));</span>
+
+        //retry and timeout settings
+<span class="nc" id="L97">        String maxRetries = options.get(FlightSource.KEY_MAX_RETRIES);</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">        if (maxRetries != null) {</span>
+<span class="nc" id="L99">            this.configuration.setMaxRetries(Integer.parseInt(maxRetries));</span>
+        }
+<span class="nc" id="L101">        String retryBackoff = options.get(FlightSource.KEY_RETRY_BACKOFF_MS);</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">        if (retryBackoff != null) {</span>
+<span class="nc" id="L103">            this.configuration.setRetryBackoffMs(Long.parseLong(retryBackoff));</span>
+        }
+<span class="nc" id="L105">        String connectTimeout = options.get(FlightSource.KEY_CONNECT_TIMEOUT_MS);</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">        if (connectTimeout != null) {</span>
+<span class="nc" id="L107">            this.configuration.setConnectTimeoutMs(Long.parseLong(connectTimeout));</span>
+        }
+
+        //the table name
+<span class="nc" id="L111">        String tableName = options.getOrDefault(FlightSource.TABLE, &quot;&quot;);</span>
+        //table name cannot empty
+<span class="nc bnc" id="L113" title="All 4 branches missed.">        if (tableName == null || tableName.isEmpty()) {</span>
+<span class="nc" id="L114">            throw new RuntimeException(&quot;The table is mandatory.&quot;);</span>
+        }
+        //set up the flight-table with the column quote-character. By default, columns are not quoted
+<span class="nc" id="L117">        this.tableName = Table.forTable(tableName, options.getOrDefault(FlightSource.COLUMN_QUOTE, &quot;&quot;));</span>
+<span class="nc bnc" id="L118" title="All 2 branches missed.">        if (initialize) {</span>
+<span class="nc" id="L119">            this.tableName.initializeSchema(this.configuration);</span>
+        }
+<span class="nc" id="L121">    }</span>
+
+    /**
+     * Get the table of the DataSource
+     * @param schema - the schema of the table
+     * @param partitioning - the partitioning for the table
+     * @param properties - the properties of the table
+     * @return - a Table object
+     */
+    @Override
+    public org.apache.spark.sql.connector.catalog.Table getTable(StructType schema, Transform[] partitioning, Map&lt;String, String&gt; properties) {
+<span class="nc" id="L132">        return new FlightTable(this.configuration, this.tableName);</span>
+    }
+
+    /**
+     * Restores a persisted Flight table from Spark's session catalog without
+     * issuing a schema-only SELECT * request. The real query is planned once,
+     * after Spark has supplied projection/filter/aggregate pushdown.
+     */
+    FlightTable getTableFromCatalog(CaseInsensitiveStringMap options, StructType schema) {
+<span class="nc" id="L141">        this.probeOptions(options, false);</span>
+<span class="nc" id="L142">        this.tableName.setSparkSchema(schema);</span>
+<span class="nc" id="L143">        return new FlightTable(this.configuration, this.tableName);</span>
+    }
+
+    /**
+     * Spark Thrift Server resolves persisted Hive data-source tables through DataSource V1.
+     */
+    @Override
+    public BaseRelation createRelation(SQLContext sqlContext, scala.collection.immutable.Map&lt;String, String&gt; parameters) {
+<span class="nc" id="L151">        Map&lt;String, String&gt; options = new HashMap&lt;&gt;(JavaConverters.mapAsJavaMap(parameters));</span>
+<span class="nc" id="L152">        this.probeOptions(new CaseInsensitiveStringMap(options), true);</span>
+<span class="nc" id="L153">        return new FlightRelation(sqlContext, this.configuration, this.tableName);</span>
+    }
+
+    /**
+     * Get the short-name of the DataSource
+     * @return - the short name of the DataSource
+     */
+    @Override
+    public String shortName() {
+<span class="nc" id="L162">        return &quot;flight&quot;;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

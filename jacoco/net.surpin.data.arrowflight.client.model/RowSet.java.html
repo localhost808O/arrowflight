@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RowSet.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.model</a> &gt; <span class="el_source">RowSet.java</span></div><h1>RowSet.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.model;
+
+import org.apache.arrow.vector.types.pojo.Schema;
+import java.util.ArrayList;
+
+/**
+ * Describes row batch from remote flight service
+ */
+public class RowSet {
+    /**
+     * The definition of Row
+     */
+    public static class Row {
+        private final ArrayList&lt;Object&gt; data;
+
+        /**
+         * Construct empty Row
+         */
+<span class="fc" id="L19">        public Row() {</span>
+<span class="fc" id="L20">            this.data = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L21">        }</span>
+
+        /**
+         * Add value to Row
+         * @param o value to add
+         */
+        public void add(Object o) {
+<span class="fc" id="L28">            this.data.add(o);</span>
+<span class="fc" id="L29">        }</span>
+
+        /**
+         * Get all values in Row
+         * @return array of values
+         */
+        public Object[] getData() {
+<span class="fc" id="L36">            return this.data.toArray(new Object[0]);</span>
+        }
+    }
+
+    //the schema of each ROw
+    private final Schema schema;
+    //the row collection
+    private final ArrayList&lt;Row&gt; data;
+
+    /**
+     * Construct a RowSet
+     * @param schema - the schema of each row in the collection
+     */
+<span class="fc" id="L49">    public RowSet(Schema schema) {</span>
+<span class="fc" id="L50">        this.schema = schema;</span>
+<span class="fc" id="L51">        this.data = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L52">    }</span>
+
+    /**
+     * Get the schema of the RowSet
+     * @return - the schema
+     */
+    public Schema getSchema() {
+<span class="nc" id="L59">        return this.schema;</span>
+    }
+
+    /**
+     * Add one Row
+     * @param row - the row to be added
+     */
+    public void add(Row row) {
+<span class="fc" id="L67">        this.data.add(row);</span>
+<span class="fc" id="L68">    }</span>
+
+    /**
+     * Add all rows from another RowSet
+     * @param rs - the input RowSet
+     */
+    public void add(RowSet rs) {
+<span class="fc bfc" id="L75" title="All 2 branches covered.">        if (rs.schema != this.schema) {</span>
+<span class="fc" id="L76">            throw new RuntimeException(&quot;The schema doesn't match. Cannot add the RowSet.&quot;);</span>
+        }
+<span class="fc" id="L78">        this.data.addAll(rs.data);</span>
+<span class="fc" id="L79">    }</span>
+
+    /**
+     * Get all Rows
+     * @return - all rows in the RowSet
+     */
+    public Row[] getData() {
+<span class="fc" id="L86">        return this.data.toArray(new Row[] {});</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

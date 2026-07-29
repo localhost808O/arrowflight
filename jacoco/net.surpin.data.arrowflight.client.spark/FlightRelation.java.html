@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightRelation.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark</a> &gt; <span class="el_source">FlightRelation.java</span></div><h1>FlightRelation.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark;
+
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.model.Table;
+import net.surpin.data.arrowflight.client.spark.read.FlightBatch;
+import net.surpin.data.arrowflight.client.spark.read.FlightPartitionReader;
+import org.apache.spark.TaskContext;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.rdd.RDD;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SQLContext;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.connector.read.InputPartition;
+import org.apache.spark.sql.sources.BaseRelation;
+import org.apache.spark.sql.sources.Filter;
+import org.apache.spark.sql.sources.PrunedFilteredScan;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+
+/**
+ * Spark DataSource V1 bridge used by Spark Thrift Server for persisted Hive tables.
+ */
+public final class FlightRelation extends BaseRelation implements PrunedFilteredScan {
+    private final SQLContext sqlContext;
+    private final Configuration configuration;
+    private final Table table;
+    private final StructType schema;
+
+<span class="nc" id="L35">    public FlightRelation(SQLContext sqlContext, Configuration configuration, Table table) {</span>
+<span class="nc" id="L36">        this.sqlContext = sqlContext;</span>
+<span class="nc" id="L37">        this.configuration = configuration;</span>
+<span class="nc" id="L38">        this.table = table;</span>
+<span class="nc" id="L39">        this.schema = table.getSparkSchema();</span>
+<span class="nc" id="L40">    }</span>
+
+    @Override
+    public SQLContext sqlContext() {
+<span class="nc" id="L44">        return this.sqlContext;</span>
+    }
+
+    @Override
+    public StructType schema() {
+<span class="nc" id="L49">        return this.schema;</span>
+    }
+
+    /**
+     * The scan already produces Catalyst {@link InternalRow}s. Telling Spark not to
+     * convert them avoids materializing a second Object[] and external Row per record.
+     */
+    @Override
+    public boolean needConversion() {
+<span class="nc" id="L58">        return false;</span>
+    }
+
+    @Override
+    public Filter[] unhandledFilters(Filter[] filters) {
+<span class="nc bnc" id="L63" title="All 4 branches missed.">        if (filters == null || filters.length == 0) {</span>
+<span class="nc" id="L64">            return new Filter[0];</span>
+        }
+<span class="nc" id="L66">        return Arrays.stream(filters)</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">                .filter(filter -&gt; !this.table.canPushFilter(filter))</span>
+<span class="nc" id="L68">                .toArray(Filter[]::new);</span>
+    }
+
+    @Override
+    public RDD&lt;Row&gt; buildScan(String[] requiredColumns, Filter[] filters) {
+<span class="nc" id="L73">        StructField[] projectedFields = resolveRequiredFields(requiredColumns);</span>
+<span class="nc" id="L74">        StructField[] queryFields = projectedFields;</span>
+<span class="nc bnc" id="L75" title="All 4 branches missed.">        if (queryFields.length == 0 &amp;&amp; this.schema.fields().length &gt; 0) {</span>
+            // A zero-column Spark scan (for example COUNT(*)) still needs one remote
+            // value per source row to preserve cardinality.
+<span class="nc" id="L78">            queryFields = new StructField[] { this.schema.fields()[0] };</span>
+        }
+
+<span class="nc bnc" id="L81" title="All 2 branches missed.">        Filter[] scanFilters = filters == null ? new Filter[0] : filters;</span>
+<span class="nc" id="L82">        String where = String.join(&quot; and &quot;, Arrays.stream(scanFilters)</span>
+<span class="nc" id="L83">                .filter(this.table::canPushFilter)</span>
+<span class="nc" id="L84">                .map(this.table::toWhereClause)</span>
+<span class="nc" id="L85">                .toArray(String[]::new));</span>
+
+        // Table contains mutable statement/schema/endpoint state. Give every Spark
+        // scan an independent instance so concurrent or repeated plans cannot reuse
+        // endpoints created for an older projection/filter.
+<span class="nc" id="L90">        Table scanTable = this.table.newScan();</span>
+<span class="nc" id="L91">        scanTable.probe(where, queryFields, null, null);</span>
+<span class="nc" id="L92">        scanTable.initialize(this.configuration);</span>
+
+<span class="nc" id="L94">        InputPartition[] partitions = new FlightBatch(this.configuration, scanTable).planInputPartitions();</span>
+<span class="nc" id="L95">        JavaSparkContext sparkContext = JavaSparkContext.fromSparkContext(this.sqlContext.sparkContext());</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">        if (partitions.length == 0) {</span>
+<span class="nc" id="L97">            return asRowRdd(sparkContext.&lt;InternalRow&gt;emptyRDD());</span>
+        }
+
+<span class="nc" id="L100">        Configuration scanConfiguration = this.configuration;</span>
+<span class="nc" id="L101">        JavaRDD&lt;InputPartition&gt; partitionRdd = sparkContext.parallelize(Arrays.asList(partitions), partitions.length);</span>
+<span class="nc" id="L102">        JavaRDD&lt;InternalRow&gt; rows = partitionRdd.mapPartitions(partitionIterator -&gt; {</span>
+<span class="nc" id="L103">            FlightRowIterator iterator = new FlightRowIterator(scanConfiguration, partitionIterator);</span>
+<span class="nc" id="L104">            TaskContext taskContext = TaskContext.get();</span>
+<span class="nc bnc" id="L105" title="All 2 branches missed.">            if (taskContext != null) {</span>
+<span class="nc" id="L106">                taskContext.addTaskCompletionListener(</span>
+<span class="nc" id="L107">                        (org.apache.spark.util.TaskCompletionListener) context -&gt; iterator.close());</span>
+            }
+<span class="nc" id="L109">            return iterator;</span>
+        });
+<span class="nc" id="L111">        return asRowRdd(rows);</span>
+    }
+
+    private StructField[] resolveRequiredFields(String[] requiredColumns) {
+<span class="nc bnc" id="L115" title="All 2 branches missed.">        if (requiredColumns == null) {</span>
+<span class="nc" id="L116">            return this.schema.fields();</span>
+        }
+<span class="nc" id="L118">        StructField[] fields = new StructField[requiredColumns.length];</span>
+<span class="nc" id="L119">        StructField[] relationFields = this.schema.fields();</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">        for (int i = 0; i &lt; requiredColumns.length; i++) {</span>
+<span class="nc" id="L121">            String required = requiredColumns[i];</span>
+<span class="nc" id="L122">            StructField match = Arrays.stream(relationFields)</span>
+<span class="nc" id="L123">                    .filter(field -&gt; field.name().equals(required))</span>
+<span class="nc" id="L124">                    .findFirst()</span>
+<span class="nc" id="L125">                    .orElseGet(() -&gt; Arrays.stream(relationFields)</span>
+<span class="nc" id="L126">                            .filter(field -&gt; field.name().equalsIgnoreCase(required))</span>
+<span class="nc" id="L127">                            .findFirst()</span>
+<span class="nc" id="L128">                            .orElseThrow(() -&gt; new IllegalArgumentException(</span>
+                                    &quot;Required column is absent from Flight schema: &quot; + required)));
+<span class="nc" id="L130">            fields[i] = match;</span>
+        }
+<span class="nc" id="L132">        return fields;</span>
+    }
+
+    /**
+     * Spark's V1 interface is typed as RDD&amp;lt;Row&amp;gt;, while needConversion=false means
+     * the physical scan consumes the contained InternalRows directly (the same
+     * convention used by Spark's JDBC V1 relation).
+     */
+    @SuppressWarnings({&quot;unchecked&quot;, &quot;rawtypes&quot;})
+    private static RDD&lt;Row&gt; asRowRdd(JavaRDD&lt;InternalRow&gt; rows) {
+<span class="nc" id="L142">        return (RDD) rows.rdd();</span>
+    }
+
+    private static final class FlightRowIterator implements Iterator&lt;InternalRow&gt;, AutoCloseable {
+        private final Configuration configuration;
+        private final Iterator&lt;InputPartition&gt; partitions;
+
+        private FlightPartitionReader reader;
+        private InternalRow nextRow;
+        private boolean loaded;
+
+<span class="nc" id="L153">        private FlightRowIterator(Configuration configuration, Iterator&lt;InputPartition&gt; partitions) {</span>
+<span class="nc" id="L154">            this.configuration = configuration;</span>
+<span class="nc" id="L155">            this.partitions = partitions;</span>
+<span class="nc" id="L156">        }</span>
+
+        @Override
+        public boolean hasNext() {
+<span class="nc bnc" id="L160" title="All 2 branches missed.">            if (!this.loaded) {</span>
+<span class="nc" id="L161">                this.advance();</span>
+            }
+<span class="nc bnc" id="L163" title="All 2 branches missed.">            return this.nextRow != null;</span>
+        }
+
+        @Override
+        public InternalRow next() {
+<span class="nc bnc" id="L168" title="All 2 branches missed.">            if (!this.hasNext()) {</span>
+<span class="nc" id="L169">                throw new NoSuchElementException();</span>
+            }
+<span class="nc" id="L171">            InternalRow current = this.nextRow;</span>
+<span class="nc" id="L172">            this.nextRow = null;</span>
+<span class="nc" id="L173">            this.loaded = false;</span>
+<span class="nc" id="L174">            return current;</span>
+        }
+
+        private void advance() {
+<span class="nc" id="L178">            this.loaded = true;</span>
+<span class="nc" id="L179">            this.nextRow = null;</span>
+
+            while (true) {
+                try {
+<span class="nc bnc" id="L183" title="All 4 branches missed.">                    if (this.reader != null &amp;&amp; this.reader.next()) {</span>
+<span class="nc" id="L184">                        this.nextRow = this.reader.get();</span>
+<span class="nc" id="L185">                        return;</span>
+                    }
+<span class="nc" id="L187">                    this.closeReader();</span>
+<span class="nc bnc" id="L188" title="All 2 branches missed.">                    if (!this.partitions.hasNext()) {</span>
+<span class="nc" id="L189">                        return;</span>
+                    }
+<span class="nc" id="L191">                    this.reader = new FlightPartitionReader(this.configuration, this.partitions.next());</span>
+<span class="nc" id="L192">                } catch (IOException e) {</span>
+<span class="nc" id="L193">                    this.closeReader();</span>
+<span class="nc" id="L194">                    throw new RuntimeException(&quot;Failed to read Flight partition&quot;, e);</span>
+<span class="nc" id="L195">                }</span>
+            }
+        }
+
+        @Override
+        public void close() {
+<span class="nc" id="L201">            this.closeReader();</span>
+<span class="nc" id="L202">        }</span>
+
+        private void closeReader() {
+<span class="nc bnc" id="L205" title="All 2 branches missed.">            if (this.reader != null) {</span>
+                try {
+<span class="nc" id="L207">                    this.reader.close();</span>
+                } finally {
+<span class="nc" id="L209">                    this.reader = null;</span>
+                }
+            }
+<span class="nc" id="L212">        }</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClusterService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.services</a> &gt; <span class="el_source">ClusterService.java</span></div><h1>ClusterService.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.services;
+
+import com.hazelcast.map.listener.EntryExpiredListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+import com.hazelcast.core.HazelcastInstance;
+
+import net.surpin.data.arrowflight.server.LogUtil;
+import net.surpin.data.arrowflight.server.adapters.HazelcastAdapter;
+import net.surpin.data.arrowflight.server.model.AppConfig;
+import net.surpin.data.arrowflight.server.model.FileAssignment;
+import net.surpin.data.arrowflight.server.model.HandleState;
+
+/**
+ * Manages server registration, heartbeats, load tracking, and statement cache lifecycle.
+ * Coordinates with other cluster members via Hazelcast distributed maps.
+ */
+public final class ClusterService implements AutoCloseable {
+
+<span class="fc" id="L36">    private static final Logger LOGGER = LoggerFactory.getLogger(ClusterService.class);</span>
+
+    private static final long HEARTBEAT_INTERVAL_SEC = 15;
+    private static final long HEARTBEAT_TIMEOUT_SEC = 45;
+<span class="fc" id="L40">    private static final long HANDLE_TTL_NANOS = TimeUnit.MINUTES.toNanos(10);</span>
+    private static final int TICKET_SECRET_BYTES = 32;
+    private static final String TICKET_SECRET_KEY = &quot;__arrowflight-ticket-secret-v1&quot;;
+    private static final String TICKET_LOAD_PREFIX = &quot;__arrowflight-ticket-load-v1:&quot;;
+<span class="fc" id="L44">    private static final SecureRandom SECURE_RANDOM = new SecureRandom();</span>
+
+    private final HazelcastAdapter hazelcast;
+    private final AppConfig appConfig;
+    private final String serverUri;
+    private final ScheduledExecutorService heartbeatExecutor;
+    private final EndpointTicketCodec endpointTicketCodec;
+<span class="fc" id="L51">    private final Map&lt;String, LocalHandle&gt; localHandles = new ConcurrentHashMap&lt;&gt;();</span>
+
+    /**
+     * Associates locally cached state with its expiration deadline.
+     *
+     * @param state handle state
+     * @param expiresAtNanos monotonic expiration deadline
+     */
+<span class="fc" id="L59">    private record LocalHandle(HandleState state, long expiresAtNanos) {</span>
+    }
+
+    /**
+     * Creates a ClusterService for the given server URI.
+     * Registers the server in the cluster and starts periodic heartbeat.
+     *
+     * @param hazelcast  Hazelcast adapter
+     * @param appConfig  server configuration
+     * @param serverUri  this server's URI string
+     */
+<span class="fc" id="L70">    public ClusterService(HazelcastAdapter hazelcast, AppConfig appConfig, String serverUri) {</span>
+<span class="fc" id="L71">        this.hazelcast = hazelcast;</span>
+<span class="fc" id="L72">        this.appConfig = appConfig;</span>
+<span class="fc" id="L73">        this.serverUri = serverUri;</span>
+<span class="fc" id="L74">        this.endpointTicketCodec = new EndpointTicketCodec(ticketSecret(hazelcast));</span>
+
+<span class="fc" id="L76">        hazelcast.serverRegistry().put(serverUri, 0L);</span>
+<span class="fc" id="L77">        hazelcast.serverHeartbeats().put(serverUri, System.currentTimeMillis());</span>
+
+<span class="fc" id="L79">        this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -&gt; {</span>
+<span class="fc" id="L80">            Thread t = new Thread(r, &quot;flight-heartbeat&quot;);</span>
+<span class="fc" id="L81">            t.setDaemon(true);</span>
+<span class="fc" id="L82">            return t;</span>
+        });
+<span class="fc" id="L84">        heartbeatExecutor.scheduleAtFixedRate(() -&gt; {</span>
+            try {
+<span class="nc" id="L86">                hazelcast.serverRegistry().putIfAbsent(serverUri, 0L);</span>
+<span class="nc" id="L87">                hazelcast.serverHeartbeats().put(serverUri, System.currentTimeMillis());</span>
+<span class="nc" id="L88">                removeExpiredLocalEntries();</span>
+<span class="nc" id="L89">            } catch (Exception e) {</span>
+<span class="nc" id="L90">                LOGGER.warn(&quot;Failed to update heartbeat for {}: {}&quot;, serverUri, e.getMessage());</span>
+<span class="nc" id="L91">            }</span>
+<span class="nc" id="L92">        }, HEARTBEAT_INTERVAL_SEC, HEARTBEAT_INTERVAL_SEC, TimeUnit.SECONDS);</span>
+
+<span class="fc" id="L94">        hazelcast.onStatementExpired((EntryExpiredListener&lt;String, Serializable&gt;) event -&gt; {</span>
+<span class="nc" id="L95">            Serializable value = event.getOldValue();</span>
+<span class="nc bnc" id="L96" title="All 4 branches missed.">            if (value instanceof HandleState state &amp;&amp; state.serverUri() != null</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">                    &amp;&amp; state.loadTracked()) {</span>
+<span class="nc" id="L98">                hazelcast.serverRegistry().compute(state.serverUri(), (k, v) -&gt; {</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">                    if (v == null) {</span>
+<span class="nc" id="L100">                        return null;</span>
+                    }
+<span class="nc" id="L102">                    long updated = v - state.bytes();</span>
+<span class="nc bnc" id="L103" title="All 2 branches missed.">                    return updated &lt;= 0 ? 0L : updated;</span>
+                });
+            }
+<span class="nc" id="L106">        });</span>
+<span class="fc" id="L107">    }</span>
+
+    /**
+     * Filters out servers that haven't sent heartbeat within timeout.
+     *
+     * @param serverUris set of URIs to check
+     * @return set of live server URIs
+     */
+    public Set&lt;String&gt; filterLiveServers(Set&lt;String&gt; serverUris) {
+<span class="fc" id="L116">        long t = LogUtil.mark();</span>
+<span class="fc" id="L117">        long now = System.currentTimeMillis();</span>
+<span class="fc" id="L118">        long deadline = now - HEARTBEAT_TIMEOUT_SEC * 1000;</span>
+
+<span class="fc" id="L120">        Map&lt;String, Long&gt; heartbeats = hazelcast.serverHeartbeats().getAll(serverUris);</span>
+<span class="fc" id="L121">        Set&lt;String&gt; live = new LinkedHashSet&lt;&gt;();</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">        for (String uri : serverUris) {</span>
+<span class="fc" id="L123">            Long lastHb = heartbeats.get(uri);</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">            if (lastHb == null) {</span>
+                // Registration and the first heartbeat are separate distributed-map writes.
+                // Keep a newly registered node eligible during that short window.
+<span class="fc" id="L127">                live.add(uri);</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">            } else if (lastHb &gt;= deadline) {</span>
+<span class="fc" id="L129">                live.add(uri);</span>
+            } else {
+<span class="fc" id="L131">                LOGGER.warn(&quot;Server {} is stale (last heartbeat {}ms ago), removing from pool&quot;,</span>
+<span class="fc" id="L132">                        uri, now - lastHb);</span>
+<span class="fc" id="L133">                hazelcast.serverRegistry().remove(uri);</span>
+<span class="fc" id="L134">                hazelcast.serverHeartbeats().remove(uri);</span>
+            }
+<span class="fc" id="L136">        }</span>
+<span class="fc" id="L137">        LogUtil.logTiming(t, &quot;hazelcast.filterLiveServers&quot;, &quot;total=&quot; + serverUris.size() + &quot; live=&quot; + live.size());</span>
+<span class="fc" id="L138">        return live;</span>
+    }
+
+    /**
+     * Returns all registered server URIs and their current loads.
+     *
+     * @return map of URI to load (bytes)
+     */
+    public Map&lt;String, Long&gt; allServerLoads() {
+<span class="fc" id="L147">        long t = LogUtil.mark();</span>
+<span class="fc" id="L148">        Map&lt;String, Long&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">        for (Map.Entry&lt;String, Long&gt; entry : hazelcast.serverRegistry().entrySet()) {</span>
+<span class="fc" id="L150">            result.put(entry.getKey(), entry.getValue());</span>
+<span class="fc" id="L151">        }</span>
+<span class="fc" id="L152">        LogUtil.logTiming(t, &quot;hazelcast.allServerLoads&quot;, &quot;servers=&quot; + result.size());</span>
+<span class="fc" id="L153">        return result;</span>
+    }
+
+    /**
+     * Returns load for a specific set of server URIs.
+     *
+     * @param serverUris URIs to query
+     * @return map of URI to load
+     */
+    public Map&lt;String, Long&gt; getLoads(Set&lt;String&gt; serverUris) {
+<span class="nc" id="L163">        return hazelcast.serverRegistry().getAll(serverUris);</span>
+    }
+
+    /**
+     * Publishes the files stored on this node. Every path is relative to the node's
+     * configured data directory.
+     *
+     * @param files relative file path to byte size
+     */
+    public void registerLocalFiles(Map&lt;String, Long&gt; files) {
+<span class="fc" id="L173">        hazelcast.serverFiles().put(this.serverUri, new LinkedHashMap&lt;&gt;(files));</span>
+<span class="fc" id="L174">        LOGGER.info(&quot;Registered {} local Parquet file(s) for {}&quot;, files.size(), this.serverUri);</span>
+<span class="fc" id="L175">    }</span>
+
+    /**
+     * Merges all published node inventories into planner file assignments.
+     * Duplicate relative paths are treated as replicas and retain every owner.
+     *
+     * @return relative path to size and owning servers
+     */
+    public Map&lt;String, FileAssignment&gt; fileLocations() {
+<span class="fc" id="L184">        long t = LogUtil.mark();</span>
+<span class="fc" id="L185">        Map&lt;String, Map&lt;String, Long&gt;&gt; inventories = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L186" title="All 2 branches covered.">        for (Map.Entry&lt;String, Map&lt;String, Long&gt;&gt; entry : hazelcast.serverFiles().entrySet()) {</span>
+<span class="fc" id="L187">            inventories.put(entry.getKey(), entry.getValue());</span>
+<span class="fc" id="L188">        }</span>
+<span class="fc" id="L189">        Map&lt;String, FileAssignment&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">        for (Map.Entry&lt;String, Map&lt;String, Long&gt;&gt; server : inventories.entrySet()) {</span>
+<span class="fc" id="L191">            String serverAddress = server.getKey();</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">            for (Map.Entry&lt;String, Long&gt; file : server.getValue().entrySet()) {</span>
+<span class="fc" id="L193">                result.compute(file.getKey(), (path, current) -&gt; {</span>
+<span class="fc" id="L194">                    Set&lt;String&gt; owners = new LinkedHashSet&lt;&gt;();</span>
+<span class="fc" id="L195">                    long size = file.getValue();</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">                    if (current != null) {</span>
+<span class="fc bfc" id="L197" title="All 2 branches covered.">                        if (current.size() != size) {</span>
+<span class="fc" id="L198">                            throw new IllegalStateException(</span>
+                                    &quot;Conflicting sizes for replicated file &quot; + path);
+                        }
+<span class="fc" id="L201">                        owners.addAll(current.hosts());</span>
+                    }
+<span class="fc" id="L203">                    owners.add(serverAddress);</span>
+<span class="fc" id="L204">                    return new FileAssignment(size, owners);</span>
+                });
+<span class="fc" id="L206">            }</span>
+<span class="fc" id="L207">        }</span>
+<span class="fc" id="L208">        LogUtil.logTiming(t, &quot;hazelcast.fileLocations&quot;, &quot;files=&quot; + result.size());</span>
+<span class="fc" id="L209">        return result;</span>
+    }
+
+    /**
+     * Checks whether a server published its local inventory, including an empty one.
+     */
+    public boolean hasFileInventory(String serverUri) {
+<span class="fc" id="L216">        return hazelcast.serverFiles().containsKey(serverUri);</span>
+    }
+
+    /**
+     * Adds delta bytes to server's tracked load.
+     *
+     * @param uri   server URI
+     * @param delta bytes to add (positive or negative)
+     */
+    public void addLoad(String uri, long delta) {
+<span class="fc" id="L226">        long t = LogUtil.mark();</span>
+<span class="fc" id="L227">        hazelcast.serverRegistry().compute(uri, (k, v) -&gt; {</span>
+<span class="nc bnc" id="L228" title="All 2 branches missed.">            if (v == null) {</span>
+<span class="nc" id="L229">                return delta;</span>
+            }
+<span class="nc" id="L231">            long updated = v + delta;</span>
+<span class="nc bnc" id="L232" title="All 2 branches missed.">            return updated &lt;= 0 ? 0L : updated;</span>
+        });
+<span class="fc" id="L234">        LogUtil.logTiming(t, &quot;hazelcast.addLoad&quot;, &quot;uri=&quot; + uri + &quot; delta=&quot; + delta);</span>
+<span class="fc" id="L235">    }</span>
+
+    /**
+     * Stores a query handle in the distributed cache with 10-minute TTL.
+     *
+     * @param handle handle string
+     * @param state  handle state
+     */
+    public void storeHandle(String handle, HandleState state) {
+<span class="fc" id="L244">        long t = LogUtil.mark();</span>
+<span class="fc" id="L245">        localHandles.put(handle, new LocalHandle(</span>
+<span class="fc" id="L246">                state, System.nanoTime() + HANDLE_TTL_NANOS));</span>
+<span class="fc" id="L247">        hazelcast.statementCache().put(handle, state, 10, TimeUnit.MINUTES);</span>
+<span class="fc" id="L248">        LogUtil.logTiming(t, &quot;hazelcast.storeHandle&quot;);</span>
+<span class="fc" id="L249">    }</span>
+
+    /**
+     * Retrieves a handle state from the distributed cache.
+     *
+     * @param handle handle string
+     * @return handle state, or null if not found
+     */
+    public HandleState getHandle(String handle) {
+<span class="fc" id="L258">        long t = LogUtil.mark();</span>
+<span class="fc" id="L259">        LocalHandle local = localHandles.get(handle);</span>
+<span class="fc bfc" id="L260" title="All 2 branches covered.">        if (local != null) {</span>
+<span class="pc bpc" id="L261" title="1 of 2 branches missed.">            if (local.expiresAtNanos() &gt; System.nanoTime()) {</span>
+<span class="fc" id="L262">                LogUtil.logTiming(t, &quot;local.getHandle&quot;, &quot;found=true&quot;);</span>
+<span class="fc" id="L263">                return local.state();</span>
+            }
+<span class="nc" id="L265">            localHandles.remove(handle, local);</span>
+        }
+<span class="fc" id="L267">        HandleState state = (HandleState) hazelcast.statementCache().get(handle);</span>
+<span class="pc bpc" id="L268" title="1 of 2 branches missed.">        if (state != null) {</span>
+<span class="nc" id="L269">            localHandles.put(handle, new LocalHandle(</span>
+<span class="nc" id="L270">                    state, System.nanoTime() + HANDLE_TTL_NANOS));</span>
+        }
+<span class="pc bpc" id="L272" title="1 of 2 branches missed.">        LogUtil.logTiming(t, &quot;hazelcast.getHandle&quot;, &quot;found=&quot; + (state != null));</span>
+<span class="fc" id="L273">        return state;</span>
+    }
+
+    /**
+     * Creates a signed self-contained handle for a server-directed Flight endpoint.
+     *
+     * @param state endpoint execution state
+     * @return authenticated handle bytes
+     */
+    public byte[] createEndpointHandle(HandleState state) {
+<span class="fc" id="L283">        byte[] handle = endpointTicketCodec.encode(state);</span>
+<span class="fc bfc" id="L284" title="All 2 branches covered.">        if (state.loadTracked()) {</span>
+<span class="fc" id="L285">            hazelcast.statementCache().put(</span>
+<span class="fc" id="L286">                    loadReservationKey(handle), state, 10, TimeUnit.MINUTES);</span>
+        }
+<span class="fc" id="L288">        return handle;</span>
+    }
+
+    /**
+     * Resolves a signed endpoint handle or a legacy distributed UUID handle.
+     *
+     * @param handle ticket statement-handle bytes
+     * @return endpoint state, or null for an unknown legacy handle
+     */
+    public HandleState resolveEndpointHandle(byte[] handle) {
+<span class="pc bpc" id="L298" title="1 of 2 branches missed.">        if (endpointTicketCodec.isEncoded(handle)) {</span>
+<span class="fc" id="L299">            return endpointTicketCodec.decode(handle);</span>
+        }
+<span class="nc" id="L301">        return getHandle(new String(handle, StandardCharsets.UTF_8));</span>
+    }
+
+    /**
+     * Releases distributed load once for a completed signed endpoint ticket.
+     *
+     * @param handle ticket statement-handle bytes
+     * @param state completed endpoint state
+     */
+    public void releaseEndpointLoad(byte[] handle, HandleState state) {
+<span class="pc bpc" id="L311" title="2 of 6 branches missed.">        if (!state.loadTracked() || state.serverUri() == null || state.bytes() == 0L) {</span>
+<span class="fc" id="L312">            return;</span>
+        }
+<span class="fc" id="L314">        Serializable reservation = hazelcast.statementCache()</span>
+<span class="fc" id="L315">                .remove(loadReservationKey(handle));</span>
+<span class="fc bfc" id="L316" title="All 2 branches covered.">        if (reservation instanceof HandleState reserved) {</span>
+<span class="fc" id="L317">            addLoad(reserved.serverUri(), -reserved.bytes());</span>
+        }
+<span class="fc" id="L319">    }</span>
+
+    /**
+     * Removes a handle from the distributed cache.
+     *
+     * @param handle handle string
+     */
+    public void removeHandle(String handle) {
+<span class="fc" id="L327">        localHandles.remove(handle);</span>
+<span class="fc" id="L328">        hazelcast.statementCache().remove(handle);</span>
+<span class="fc" id="L329">    }</span>
+
+    /**
+     * Obtains the cluster-shared secret used to authenticate endpoint tickets.
+     *
+     * @param hazelcast Hazelcast adapter
+     * @return cluster-shared secret bytes
+     */
+    private static byte[] ticketSecret(HazelcastAdapter hazelcast) {
+<span class="fc" id="L338">        byte[] candidate = new byte[TICKET_SECRET_BYTES];</span>
+<span class="fc" id="L339">        SECURE_RANDOM.nextBytes(candidate);</span>
+<span class="fc" id="L340">        Serializable existing = hazelcast.statementCache()</span>
+<span class="fc" id="L341">                .putIfAbsent(TICKET_SECRET_KEY, candidate);</span>
+<span class="fc bfc" id="L342" title="All 2 branches covered.">        if (existing == null) {</span>
+<span class="fc" id="L343">            return candidate;</span>
+        }
+<span class="pc bpc" id="L345" title="2 of 4 branches missed.">        if (existing instanceof byte[] secret &amp;&amp; secret.length &gt;= TICKET_SECRET_BYTES) {</span>
+<span class="fc" id="L346">            return secret.clone();</span>
+        }
+<span class="nc" id="L348">        throw new IllegalStateException(&quot;Invalid cluster Flight ticket secret&quot;);</span>
+    }
+
+    /**
+     * Creates a compact stable key for a distributed load reservation.
+     *
+     * @param handle ticket statement-handle bytes
+     * @return base64-encoded SHA-256 digest
+     */
+    private static String loadReservationKey(byte[] handle) {
+        try {
+<span class="fc" id="L359">            return TICKET_LOAD_PREFIX + Base64.getEncoder().encodeToString(</span>
+<span class="fc" id="L360">                    MessageDigest.getInstance(&quot;SHA-256&quot;).digest(handle));</span>
+<span class="nc" id="L361">        } catch (NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L362">            throw new IllegalStateException(&quot;SHA-256 is unavailable&quot;, e);</span>
+        }
+    }
+
+    /**
+     * Removes expired local handle and idempotency entries.
+     */
+    private void removeExpiredLocalEntries() {
+<span class="nc" id="L370">        long now = System.nanoTime();</span>
+<span class="nc" id="L371">        localHandles.entrySet().removeIf(</span>
+<span class="nc bnc" id="L372" title="All 2 branches missed.">                entry -&gt; entry.getValue().expiresAtNanos() &lt;= now);</span>
+<span class="nc" id="L373">    }</span>
+
+    /**
+     * Returns this server's URI.
+     *
+     * @return server URI string
+     */
+    public String serverUri() {
+<span class="fc" id="L381">        return serverUri;</span>
+    }
+
+    /**
+     * Returns the underlying Hazelcast instance for cluster management.
+     *
+     * @return Hazelcast instance
+     */
+    public HazelcastInstance getHazelcastInstance() {
+<span class="nc" id="L390">        return hazelcast.instance();</span>
+    }
+
+    @Override
+    public void close() {
+        try {
+<span class="fc" id="L396">            hazelcast.serverRegistry().remove(serverUri);</span>
+<span class="fc" id="L397">            hazelcast.serverHeartbeats().remove(serverUri);</span>
+<span class="nc" id="L398">        } catch (Exception e) {</span>
+<span class="nc" id="L399">            LOGGER.warn(&quot;Failed to deregister server from cluster: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L400">        }</span>
+<span class="fc" id="L401">        heartbeatExecutor.shutdownNow();</span>
+<span class="fc" id="L402">        localHandles.clear();</span>
+        try {
+<span class="fc" id="L404">            hazelcast.close();</span>
+<span class="nc" id="L405">        } catch (Exception e) {</span>
+<span class="nc" id="L406">            LOGGER.error(&quot;Error closing Hazelcast adapter&quot;, e);</span>
+<span class="fc" id="L407">        }</span>
+<span class="fc" id="L408">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

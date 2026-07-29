@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightSessionCatalog.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark</a> &gt; <span class="el_source">FlightSessionCatalog.java</span></div><h1>FlightSessionCatalog.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark;
+
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
+import org.apache.spark.sql.connector.catalog.DelegatingCatalogExtension;
+import org.apache.spark.sql.connector.catalog.Identifier;
+import org.apache.spark.sql.connector.catalog.V1Table;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.util.CaseInsensitiveStringMap;
+import scala.Option;
+import scala.collection.JavaConverters;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
+/**
+ * Session-catalog bridge that rehydrates persisted Flight data-source tables as
+ * DataSource V2 tables while delegating every other catalog operation to Spark.
+ *
+ * &lt;p&gt;Spark's built-in session catalog loads persisted {@code CREATE TABLE USING}
+ * metadata as {@link V1Table}, even when the provider implements TableProvider.
+ * Spark Thrift therefore cannot otherwise reach Flight's V2 projection, filter,
+ * aggregate and columnar scan interfaces.&lt;/p&gt;
+ */
+<span class="nc" id="L26">public final class FlightSessionCatalog extends DelegatingCatalogExtension {</span>
+<span class="nc" id="L27">    private final ConcurrentMap&lt;String, StructType&gt; inferredSchemas = new ConcurrentHashMap&lt;&gt;();</span>
+
+    @Override
+    public org.apache.spark.sql.connector.catalog.Table loadTable(Identifier ident)
+            throws NoSuchTableException {
+<span class="nc" id="L32">        org.apache.spark.sql.connector.catalog.Table loaded = super.loadTable(ident);</span>
+<span class="nc bnc" id="L33" title="All 4 branches missed.">        if (!(loaded instanceof V1Table v1Table) || !isFlightProvider(v1Table)) {</span>
+<span class="nc" id="L34">            return loaded;</span>
+        }
+
+<span class="nc" id="L37">        Map&lt;String, String&gt; options = new HashMap&lt;&gt;(</span>
+<span class="nc" id="L38">                JavaConverters.mapAsJavaMap(v1Table.options()));</span>
+<span class="nc" id="L39">        FlightSource source = new FlightSource();</span>
+<span class="nc" id="L40">        CaseInsensitiveStringMap sourceOptions = new CaseInsensitiveStringMap(options);</span>
+<span class="nc" id="L41">        StructType schema = v1Table.schema();</span>
+<span class="nc bnc" id="L42" title="All 2 branches missed.">        if (schema.isEmpty()) {</span>
+            // V1 CREATE TABLE may persist an empty placeholder schema. Resolve it
+            // once per remote table without allocating Flight endpoints/tickets.
+<span class="nc" id="L45">            schema = this.inferredSchemas.computeIfAbsent(</span>
+<span class="nc" id="L46">                    schemaCacheKey(sourceOptions), ignored -&gt; {</span>
+<span class="nc" id="L47">                        FlightSource schemaSource = new FlightSource();</span>
+<span class="nc" id="L48">                        StructType inferred = schemaSource.inferSchema(sourceOptions);</span>
+<span class="nc bnc" id="L49" title="All 2 branches missed.">                        if (inferred.isEmpty()) {</span>
+<span class="nc" id="L50">                            throw new IllegalStateException(</span>
+                                    &quot;Flight returned an empty schema for &quot;
+<span class="nc" id="L52">                                            + sourceOptions.getOrDefault(&quot;table&quot;, &quot;&lt;unknown&gt;&quot;)</span>
+                                            + &quot;; verify that the configured Flight node has a local Parquet shard&quot;);
+                        }
+<span class="nc" id="L55">                        return inferred;</span>
+                    });
+        }
+<span class="nc" id="L58">        return source.getTableFromCatalog(sourceOptions, schema);</span>
+    }
+
+    private static String schemaCacheKey(CaseInsensitiveStringMap options) {
+<span class="nc" id="L62">        return String.join(&quot;\u0000&quot;,</span>
+<span class="nc" id="L63">                options.getOrDefault(&quot;host&quot;, &quot;&quot;),</span>
+<span class="nc" id="L64">                options.getOrDefault(&quot;port&quot;, &quot;32010&quot;),</span>
+<span class="nc" id="L65">                options.getOrDefault(&quot;tls.enabled&quot;, &quot;false&quot;),</span>
+<span class="nc" id="L66">                options.getOrDefault(FlightSource.KEY_DEFAULT_SCHEMA, &quot;&quot;),</span>
+<span class="nc" id="L67">                options.getOrDefault(&quot;table&quot;, &quot;&quot;));</span>
+    }
+
+    private static boolean isFlightProvider(V1Table table) {
+<span class="nc" id="L71">        Option&lt;String&gt; provider = table.catalogTable().provider();</span>
+<span class="nc bnc" id="L72" title="All 2 branches missed.">        if (provider.isEmpty()) {</span>
+<span class="nc" id="L73">            return false;</span>
+        }
+<span class="nc" id="L75">        String name = provider.get();</span>
+<span class="nc bnc" id="L76" title="All 4 branches missed.">        return FlightSource.class.getName().equals(name) || &quot;flight&quot;.equalsIgnoreCase(name);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

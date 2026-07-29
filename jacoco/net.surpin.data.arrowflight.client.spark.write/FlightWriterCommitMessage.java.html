@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightWriterCommitMessage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.write</a> &gt; <span class="el_source">FlightWriterCommitMessage.java</span></div><h1>FlightWriterCommitMessage.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.write;
+
+import org.apache.spark.sql.connector.write.WriterCommitMessage;
+import java.io.Serializable;
+
+/**
+ * Describes the flight writer commit message
+ */
+public class FlightWriterCommitMessage implements WriterCommitMessage, Serializable {
+    private final int partitionId;
+    private final long taskId;
+    private final String epochId;
+    private final long messageCount;
+
+    /**
+     * Construct a success Flight-Writer-Commit-Message
+     * @param partitionId - the partition-id of the data-frame been written
+     * @param taskId - the task id of the writing operation
+     * @param messageCount - number of rows been written
+     */
+<span class="fc" id="L21">    public FlightWriterCommitMessage(int partitionId, long taskId, long messageCount) {</span>
+<span class="fc" id="L22">        this.partitionId = partitionId;</span>
+<span class="fc" id="L23">        this.taskId = taskId;</span>
+<span class="fc" id="L24">        this.epochId = &quot;&quot;;</span>
+<span class="fc" id="L25">        this.messageCount = messageCount;</span>
+<span class="fc" id="L26">    }</span>
+
+    /**
+     * Construct a failure Flight-Writer-Commit-Message
+     * @param partitionId - the partition-id of the data-frame been written
+     * @param taskId - the task id of the writing operation
+     * @param epochId - the epoch-id for streaming write.
+     * @param messageCount - number of rows been written
+     */
+<span class="fc" id="L35">    public FlightWriterCommitMessage(int partitionId, long taskId, String epochId, long messageCount) {</span>
+<span class="fc" id="L36">        this.partitionId = partitionId;</span>
+<span class="fc" id="L37">        this.taskId = taskId;</span>
+<span class="fc" id="L38">        this.epochId = epochId;</span>
+<span class="fc" id="L39">        this.messageCount = messageCount;</span>
+<span class="fc" id="L40">    }</span>
+
+    /**
+     * Construct a failure Flight-Writer-Commit-Message
+     * @param message - the base write commit message
+     * @param epochId - the epoch-id for streaming write.
+     */
+<span class="fc" id="L47">    public FlightWriterCommitMessage(FlightWriterCommitMessage message, long epochId) {</span>
+<span class="fc" id="L48">        this.partitionId = message.partitionId;</span>
+<span class="fc" id="L49">        this.taskId = message.taskId;</span>
+<span class="fc" id="L50">        this.epochId = Long.toString(epochId);</span>
+<span class="fc" id="L51">        this.messageCount = message.messageCount;</span>
+<span class="fc" id="L52">    }</span>
+
+    /**
+     * form the committed message
+     * @return - the commit message
+     */
+    public String getMessage() {
+<span class="pc bpc" id="L59" title="1 of 4 branches missed.">        return (this.epochId == null || this.epochId.length() == 0) ? String.format(&quot;Streaming write for %d messages with partition (%d), task (%d) committed.&quot;, this.messageCount, this.partitionId, this.taskId)</span>
+<span class="fc" id="L60">            : String.format(&quot;Streaming write for %d messages with partition (%d), task (%d) and epoch (%s) committed.&quot;, this.messageCount, this.partitionId, this.taskId, this.epochId);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

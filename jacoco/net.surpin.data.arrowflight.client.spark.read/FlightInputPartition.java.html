@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightInputPartition.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.read</a> &gt; <span class="el_source">FlightInputPartition.java</span></div><h1>FlightInputPartition.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.read;
+
+import net.surpin.data.arrowflight.client.query.Endpoint;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.connector.read.InputPartition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.Serializable;
+import java.net.URI;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
+/**
+ * Describes the data-structure of flight input-partitions
+ */
+public class FlightInputPartition implements InputPartition, Serializable {
+<span class="fc" id="L19">    private static final Logger LOGGER = LoggerFactory.getLogger(FlightInputPartition.class);</span>
+
+    /**
+     * The input-partition with end-points
+     */
+    public static class FlightEndpointInputPartition extends FlightInputPartition {
+        private final Endpoint ep;
+        private final String[] preferredLocations;
+
+        /**
+         * Construct a flight end-point input-partition
+         * @param schema - the schema of the partition
+         * @param ep - the end-point of the partition
+         */
+        public FlightEndpointInputPartition(Schema schema, Endpoint ep) {
+<span class="fc" id="L34">            super(schema);</span>
+<span class="fc" id="L35">            this.ep = ep;</span>
+<span class="fc" id="L36">            this.preferredLocations = endpointHosts(ep);</span>
+<span class="fc" id="L37">        }</span>
+
+        /**
+         * Get the end-point of the input-partition
+         * @return - the end-point of the input partition
+         */
+        public Endpoint getEndpoint() {
+<span class="nc" id="L44">            return this.ep;</span>
+        }
+
+        @Override
+        public String[] preferredLocations() {
+<span class="fc" id="L49">            return this.preferredLocations.clone();</span>
+        }
+
+        /**
+         * Resolves Spark locality hints from Flight endpoint host names.
+         *
+         * @param endpoint Flight endpoint assigned to the partition
+         * @return unique endpoint and colocated Spark worker host names
+         */
+        private static String[] endpointHosts(Endpoint endpoint) {
+<span class="fc" id="L59">            Set&lt;String&gt; hosts = new LinkedHashSet&lt;&gt;();</span>
+<span class="pc bpc" id="L60" title="2 of 4 branches missed.">            if (endpoint == null || endpoint.getURIs() == null) {</span>
+<span class="nc" id="L61">                return new String[0];</span>
+            }
+<span class="fc bfc" id="L63" title="All 2 branches covered.">            for (URI uri : endpoint.getURIs()) {</span>
+<span class="pc bpc" id="L64" title="3 of 6 branches missed.">                if (uri == null || uri.getHost() == null || uri.getHost().isBlank()) {</span>
+<span class="nc" id="L65">                    continue;</span>
+                }
+<span class="fc" id="L67">                String host = uri.getHost();</span>
+<span class="fc" id="L68">                hosts.add(host);</span>
+<span class="fc bfc" id="L69" title="All 2 branches covered.">                if (host.startsWith(&quot;flight-server-&quot;)) {</span>
+<span class="fc" id="L70">                    hosts.add(&quot;server-node-&quot; + host.substring(&quot;flight-server-&quot;.length()));</span>
+                }
+            }
+<span class="fc" id="L73">            return hosts.toArray(new String[0]);</span>
+        }
+    }
+
+    /**
+     * The input-partition with query
+     */
+    public static class FlightQueryInputPartition extends FlightInputPartition {
+        private final String query;
+
+        /**
+         * Construct a flight query input-partition
+         * @param schema - the schema of the partition
+         * @param query - the query for the partition
+         */
+        public FlightQueryInputPartition(Schema schema, String query) {
+<span class="fc" id="L89">            super(schema);</span>
+<span class="fc" id="L90">            this.query = query;</span>
+<span class="fc" id="L91">        }</span>
+
+        /**
+         * Get the query of the input-partition
+         * @return - the query of the input-partition
+         */
+        public String getQuery() {
+<span class="nc" id="L98">            return this.query;</span>
+        }
+    }
+
+    //the schema of the input partition
+    private final String schema;
+    private transient volatile Schema parsedSchema;
+
+    /**
+     * Construct a flight-input-partition
+     * @param schema - the schema of the partition
+     */
+<span class="fc" id="L110">    protected FlightInputPartition(Schema schema) {</span>
+<span class="fc" id="L111">        this.schema = schema.toJson();</span>
+<span class="fc" id="L112">        this.parsedSchema = schema;</span>
+<span class="fc" id="L113">    }</span>
+
+    /**
+     * Get the schema of the partition
+     * @return - the schema of the partition
+     * @throws IOException - thrown when the schema is in invalid json format.
+     */
+    public Schema getSchema() throws IOException {
+<span class="fc" id="L121">        Schema cached = this.parsedSchema;</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">        if (cached == null) {</span>
+<span class="fc" id="L123">            cached = Schema.fromJSON(this.schema);</span>
+<span class="fc" id="L124">            this.parsedSchema = cached;</span>
+        }
+<span class="fc" id="L126">        return cached;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

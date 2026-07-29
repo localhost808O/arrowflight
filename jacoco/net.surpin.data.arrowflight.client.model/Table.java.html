@@ -1,0 +1,786 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Table.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.model</a> &gt; <span class="el_source">Table.java</span></div><h1>Table.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.model;
+
+import net.surpin.data.arrowflight.client.Client;
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.query.Endpoint;
+import net.surpin.data.arrowflight.client.query.PushAggregation;
+import net.surpin.data.arrowflight.client.query.QueryEndpoints;
+import net.surpin.data.arrowflight.client.query.QueryStatement;
+import net.surpin.data.arrowflight.client.write.PartitionBehavior;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.connector.expressions.Expression;
+import org.apache.spark.sql.connector.expressions.Literal;
+import org.apache.spark.sql.connector.expressions.NamedReference;
+import org.apache.spark.sql.connector.expressions.filter.Predicate;
+import org.apache.spark.sql.sources.*;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.Metadata;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.Serializable;
+import java.sql.Date;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.TemporalAccessor;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.function.Function;
+
+/**
+ * Describes a flight table
+ */
+public final class Table implements Serializable {
+<span class="fc" id="L40">    private static final Logger LOGGER = LoggerFactory.getLogger(Table.class);</span>
+
+    private static final String IS_NULL = &quot; is null&quot;;
+    private static final String IS_NOT_NULL = &quot; is not null&quot;;
+    private static final String AND = &quot; and &quot;;
+    private static final String AND_OPERATOR = &quot;and&quot;;
+
+    /** Holds the generated select and grouping clauses. */
+<span class="fc" id="L48">    private record QueryParts(String select, String groupBy, boolean aggregationWithoutGroupBy) {</span>
+    }
+
+    //the name of a flight table whose data will be queried/updated
+    private final String name;
+    //the character for quoting columns in sql statements
+    private final String columnQuote;
+
+    //the read-statement
+    private QueryStatement stmt;
+
+    //the spark schema
+<span class="fc" id="L60">    private StructType sparkSchema = null;</span>
+    //the flight schema
+<span class="fc" id="L62">    private transient Schema schema = null;</span>
+    //the end-points exposed by the remote flight-service for fetching data of this table
+<span class="fc" id="L64">    private Endpoint[] endpoints = new Endpoint[0];</span>
+    //the estimated input size exposed through FlightInfo
+<span class="fc" id="L66">    private long estimatedBytes = -1L;</span>
+    //the estimated input row count exposed through FlightInfo
+<span class="fc" id="L68">    private long estimatedRows = -1L;</span>
+
+    //the container for holding the partitioning queries
+<span class="fc" id="L71">    private final java.util.List&lt;String&gt; partitionStmts = new java.util.ArrayList&lt;&gt;();</span>
+
+    /**
+     * Construct a Table object
+     * @param name - the name of the table
+     * @param columnQuote - the character for quoting columns in sql statements
+     */
+<span class="fc" id="L78">    private Table(String name, String columnQuote) {</span>
+<span class="fc" id="L79">        this.name = name;</span>
+<span class="fc" id="L80">        this.columnQuote = columnQuote;</span>
+
+<span class="fc" id="L82">        this.prepareQueryStatement(null, null, null, null);</span>
+<span class="fc" id="L83">    }</span>
+
+    /**
+     * Get the name of the table
+     * @return - the name of the table
+     */
+    public String getName() {
+<span class="fc" id="L90">        return this.name;</span>
+    }
+
+    /**
+     * Get the sql-statement for querying the table
+     * @return - the physical query which will be submitted to remote flight service
+     */
+    public String getQueryStatement() {
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">        if (this.stmt == null) {</span>
+<span class="nc" id="L99">            throw new RuntimeException(&quot;The read statement is not valid.&quot;);</span>
+        }
+<span class="fc" id="L101">        return this.stmt.getStatement();</span>
+    }
+
+    /**
+     * Get the partition queries
+     * @return - the partition queries with each of which is submitted from a spark executor
+     */
+    public String[] getPartitionStatements() {
+<span class="nc" id="L109">        return this.partitionStmts.toArray(new String[0]);</span>
+    }
+
+    /**
+     * Get the spark schema
+     * @return - the spark schema
+     */
+    public StructType getSparkSchema() {
+<span class="fc" id="L117">        return this.sparkSchema;</span>
+    }
+
+    /**
+     * Seeds schema metadata restored from Spark's persisted catalog entry.
+     * No Flight query is submitted; the actual scan still obtains its Arrow
+     * schema and endpoints after pushdown has been applied.
+     *
+     * @param sparkSchema persisted Spark schema
+     */
+    public void setSparkSchema(StructType sparkSchema) {
+<span class="fc" id="L128">        this.sparkSchema = sparkSchema;</span>
+<span class="fc" id="L129">    }</span>
+
+    /**
+     * Get the end-points
+     * @return - end-points exposed by the remote flight service upon submitted query
+     */
+    public Endpoint[] getEndpoints() {
+<span class="nc" id="L136">        return this.endpoints;</span>
+    }
+
+    /**
+     * Returns the estimated input size for this physical scan.
+     *
+     * @return estimated bytes, or a negative value when unavailable
+     */
+    public long getEstimatedBytes() {
+<span class="nc" id="L145">        return estimatedBytes;</span>
+    }
+
+    /**
+     * Returns the estimated input row count for this physical scan.
+     *
+     * @return estimated rows, or a negative value when unavailable
+     */
+    public long getEstimatedRows() {
+<span class="nc" id="L154">        return estimatedRows;</span>
+    }
+
+    /**
+     * Get the flight schema
+     * @return - the flight schema
+     */
+    public Schema getSchema() {
+<span class="nc" id="L162">        return this.schema;</span>
+    }
+
+    /**
+     * Get the character for quoting columns
+     * @return - the character for quoting columns
+     */
+    public String getColumnQuote() {
+<span class="fc" id="L170">        return this.columnQuote;</span>
+    }
+
+    /**
+     * Creates an independent table state for one Spark scan.
+     *
+     * &lt;p&gt;Projection and filter pushdown mutate the physical statement, schema and
+     * endpoints. A relation may be planned more than once, so sharing that mutable
+     * state between scans can reuse endpoints for an older query.&lt;/p&gt;
+     *
+     * @return a table with the same source and quoting rules and a fresh scan state
+     */
+    public Table newScan() {
+<span class="nc" id="L183">        Table scan = new Table(this.name, this.columnQuote);</span>
+<span class="nc" id="L184">        scan.sparkSchema = this.sparkSchema;</span>
+<span class="nc" id="L185">        return scan;</span>
+    }
+
+    /**
+     * Initialize the schema and end-points by submitting the physical query
+     * @param config - the connection configuration
+     */
+    public void initialize(Configuration config) {
+<span class="nc" id="L193">        LOGGER.debug(&quot;Table.initialize(): config: {}&quot;, config);</span>
+        try {
+<span class="nc" id="L195">            Client client = Client.getOrCreate(config);</span>
+<span class="nc" id="L196">            QueryEndpoints eps = client.getQueryEndpoints(this.getQueryStatement());</span>
+<span class="nc" id="L197">            LOGGER.debug(&quot;Table.initialize(): endpoints: {}&quot;, eps);</span>
+
+<span class="nc" id="L199">            this.sparkSchema = new StructType(Arrays.stream(Field.from(eps.getSchema())).map(fs -&gt; new StructField(fs.getName(), FieldType.toSpark(fs.getType()), true, Metadata.empty())).toArray(StructField[]::new));</span>
+<span class="nc" id="L200">            this.schema = eps.getSchema();</span>
+<span class="nc" id="L201">            this.endpoints = eps.getEndpoints();</span>
+<span class="nc" id="L202">            this.estimatedBytes = eps.getTotalBytes();</span>
+<span class="nc" id="L203">            this.estimatedRows = eps.getTotalRecords();</span>
+<span class="nc" id="L204">        } catch (Exception e) {</span>
+<span class="nc" id="L205">            LOGGER.error(e.getMessage(), e);</span>
+<span class="nc" id="L206">            throw new RuntimeException(e);</span>
+<span class="nc" id="L207">        }</span>
+<span class="nc" id="L208">    }</span>
+
+    /**
+     * Initializes result schema without allocating endpoints or server handles.
+     * Used during Spark catalog/table schema inference; the real scan is planned
+     * only after pushdown is known.
+     *
+     * @param config connection configuration
+     */
+    public void initializeSchema(Configuration config) {
+<span class="nc" id="L218">        LOGGER.debug(&quot;Table.initializeSchema(): config: {}&quot;, config);</span>
+        try {
+<span class="nc" id="L220">            Schema resultSchema = Client.getOrCreate(config).getQuerySchema(this.getQueryStatement());</span>
+<span class="nc" id="L221">            this.sparkSchema = new StructType(Arrays.stream(Field.from(resultSchema))</span>
+<span class="nc" id="L222">                    .map(fs -&gt; new StructField(fs.getName(), FieldType.toSpark(fs.getType()),</span>
+<span class="nc" id="L223">                            true, Metadata.empty()))</span>
+<span class="nc" id="L224">                    .toArray(StructField[]::new));</span>
+<span class="nc" id="L225">            this.schema = resultSchema;</span>
+<span class="nc" id="L226">            this.endpoints = new Endpoint[0];</span>
+<span class="nc" id="L227">            this.estimatedBytes = -1L;</span>
+<span class="nc" id="L228">            this.estimatedRows = -1L;</span>
+<span class="nc" id="L229">        } catch (Exception e) {</span>
+<span class="nc" id="L230">            LOGGER.error(e.getMessage(), e);</span>
+<span class="nc" id="L231">            throw new RuntimeException(e);</span>
+<span class="nc" id="L232">        }</span>
+<span class="nc" id="L233">    }</span>
+
+    /**
+     * Builds or updates the query statement and partition queries.
+     *
+     * @param aggregation optional aggregation
+     * @param fields projected fields
+     * @param filter filter clause
+     * @param partitionBehavior partitioning config
+     * @return true if query changed
+     */
+    private boolean prepareQueryStatement(PushAggregation aggregation, StructField[] fields, String filter, PartitionBehavior partitionBehavior) {
+<span class="fc" id="L245">        QueryParts parts = buildQueryParts(aggregation, fields);</span>
+<span class="fc" id="L246">        QueryStatement query = new QueryStatement(parts.select(), filter, parts.groupBy());</span>
+<span class="fc" id="L247">        boolean changed = query.different(this.stmt);</span>
+<span class="fc bfc" id="L248" title="All 2 branches covered.">        if (changed) {</span>
+<span class="fc" id="L249">            this.stmt = query;</span>
+        }
+
+<span class="fc" id="L252">        this.partitionStmts.clear();</span>
+<span class="pc bpc" id="L253" title="1 of 4 branches missed.">        if (!parts.aggregationWithoutGroupBy()</span>
+<span class="nc bnc" id="L254" title="All 2 branches missed.">                &amp;&amp; partitionBehavior != null &amp;&amp; partitionBehavior.enabled().booleanValue()) {</span>
+<span class="nc" id="L255">            preparePartitionStatements(parts, fields, filter, partitionBehavior);</span>
+        }
+<span class="fc" id="L257">        return changed;</span>
+    }
+
+    private QueryParts buildQueryParts(
+            PushAggregation aggregation,
+            StructField[] fields) {
+<span class="fc bfc" id="L263" title="All 2 branches covered.">        if (aggregation != null) {</span>
+<span class="fc" id="L264">            String[] groupBy = aggregation.getGroupByColumns();</span>
+<span class="fc" id="L265">            return new QueryParts(</span>
+<span class="fc" id="L266">                    String.format(</span>
+                            &quot;select %s from %s&quot;,
+<span class="fc" id="L268">                            String.join(&quot;,&quot;, aggregation.getColumnExpressions()),</span>
+                            this.name),
+<span class="pc bpc" id="L270" title="1 of 4 branches missed.">                    groupBy == null || groupBy.length == 0</span>
+<span class="pc bpc" id="L271" title="1 of 4 branches missed.">                            ? &quot;&quot; : String.join(&quot;,&quot;, groupBy),</span>
+                    groupBy == null || groupBy.length == 0);
+        }
+<span class="pc bpc" id="L274" title="3 of 4 branches missed.">        String select = fields == null || fields.length == 0</span>
+<span class="fc" id="L275">                ? String.format(&quot;select * from %s&quot;, this.name)</span>
+<span class="pc" id="L276">                : String.format(</span>
+                        &quot;select %s from %s&quot;,
+<span class="nc" id="L278">                        String.join(&quot;,&quot;, Arrays.stream(fields)</span>
+<span class="nc" id="L279">                                .map(column -&gt; String.format(</span>
+                                        &quot;%s%s%s&quot;,
+                                        this.columnQuote,
+<span class="nc" id="L282">                                        column.name(),</span>
+                                        this.columnQuote))
+<span class="nc" id="L284">                                .toArray(String[]::new)),</span>
+                        this.name);
+<span class="fc" id="L286">        return new QueryParts(select, &quot;&quot;, false);</span>
+    }
+
+    private void preparePartitionStatements(
+            QueryParts parts,
+            StructField[] fields,
+            String filter,
+            PartitionBehavior partitionBehavior) {
+<span class="nc bnc" id="L294" title="All 4 branches missed.">        String where = filter == null || filter.isEmpty()</span>
+<span class="nc" id="L295">                ? &quot;&quot; : String.format(&quot;(%s)%s&quot;, filter, AND);</span>
+<span class="nc bnc" id="L296" title="All 2 branches missed.">        StructField[] predicateFields = this.sparkSchema == null</span>
+<span class="nc" id="L297">                ? fields : mergeFields(fields, this.sparkSchema.fields());</span>
+<span class="nc bnc" id="L298" title="All 2 branches missed.">        String[] predicates = partitionBehavior.predicateDefined().booleanValue()</span>
+<span class="nc" id="L299">                ? partitionBehavior.getPredicates()</span>
+<span class="nc" id="L300">                : partitionBehavior.calculatePredicates(predicateFields);</span>
+<span class="nc bnc" id="L301" title="All 2 branches missed.">        for (String predicate : predicates) {</span>
+<span class="nc" id="L302">            QueryStatement query = new QueryStatement(</span>
+<span class="nc" id="L303">                    parts.select(),</span>
+<span class="nc" id="L304">                    String.format(&quot;%s(%s)&quot;, where, predicate),</span>
+<span class="nc" id="L305">                    parts.groupBy());</span>
+<span class="nc" id="L306">            this.partitionStmts.add(query.getStatement());</span>
+        }
+<span class="nc" id="L308">    }</span>
+
+    private static StructField[] mergeFields(
+            StructField[] first,
+            StructField[] second) {
+<span class="nc" id="L313">        java.util.Map&lt;String, StructField&gt; fields = new java.util.LinkedHashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L314" title="All 2 branches missed.">        if (first != null) {</span>
+<span class="nc bnc" id="L315" title="All 2 branches missed.">            for (StructField field : first) {</span>
+<span class="nc" id="L316">                fields.put(field.name(), field);</span>
+            }
+        }
+<span class="nc bnc" id="L319" title="All 2 branches missed.">        if (second != null) {</span>
+<span class="nc bnc" id="L320" title="All 2 branches missed.">            for (StructField field : second) {</span>
+<span class="nc" id="L321">                fields.put(field.name(), field);</span>
+            }
+        }
+<span class="nc" id="L324">        return fields.values().toArray(new StructField[0]);</span>
+    }
+
+    /**
+     * Translates a Spark Filter to a SQL WHERE clause.
+     *
+     * @param filter Spark filter
+     * @return SQL WHERE clause string
+     */
+    public String toWhereClause(Filter filter) {
+<span class="fc" id="L334">        return toWhereClauseIfSupported(filter).orElseThrow(() -&gt;</span>
+<span class="fc" id="L335">                new IllegalArgumentException(&quot;Unsupported Spark filter: &quot; + filter));</span>
+    }
+
+    /**
+     * Returns whether a Spark filter can be translated without changing its semantics.
+     * Composite filters are accepted only when every child is accepted.
+     *
+     * @param filter Spark filter
+     * @return true when the complete filter can be evaluated by the Flight server
+     */
+    public boolean canPushFilter(Filter filter) {
+<span class="fc" id="L346">        return toWhereClauseIfSupported(filter).isPresent();</span>
+    }
+
+    /**
+     * Translates a Spark V2 predicate to a SQL WHERE clause.
+     *
+     * @param predicate Spark V2 predicate
+     * @return SQL WHERE clause string
+     * @throws IllegalArgumentException if the predicate is unsupported
+     */
+    public String toWhereClause(Predicate predicate) {
+<span class="fc" id="L357">        return toWhereClauseIfSupported(predicate).orElseThrow(() -&gt;</span>
+<span class="nc" id="L358">                new IllegalArgumentException(&quot;Unsupported Spark V2 predicate: &quot; + predicate));</span>
+    }
+
+    /**
+     * Returns whether a Spark V2 predicate can be translated exactly.
+     *
+     * @param predicate Spark V2 predicate
+     * @return true when the complete predicate can be evaluated by the Flight server
+     */
+    public boolean canPushPredicate(Predicate predicate) {
+<span class="fc" id="L368">        return toWhereClauseIfSupported(predicate).isPresent();</span>
+    }
+
+    /**
+     * Attempts to translate a complete Spark V2 predicate.
+     *
+     * @param predicate Spark V2 predicate
+     * @return translated SQL clause when every expression is supported
+     */
+    private Optional&lt;String&gt; toWhereClauseIfSupported(Predicate predicate) {
+<span class="pc bpc" id="L378" title="1 of 2 branches missed.">        if (predicate == null) {</span>
+<span class="nc" id="L379">            return Optional.empty();</span>
+        }
+<span class="fc" id="L381">        String predicateName = predicate.name().toUpperCase(Locale.ROOT);</span>
+<span class="fc" id="L382">        Expression[] children = predicate.children();</span>
+<span class="pc bpc" id="L383" title="1 of 2 branches missed.">        if (isComparisonPredicate(predicateName)) {</span>
+<span class="fc" id="L384">            return comparisonPredicate(predicateName, children);</span>
+        }
+<span class="nc bnc" id="L386" title="All 8 branches missed.">        return switch (predicateName) {</span>
+<span class="nc" id="L387">            case &quot;ALWAYS_TRUE&quot; -&gt; fixedPredicate(children, &quot;(1 = 1)&quot;);</span>
+<span class="nc" id="L388">            case &quot;ALWAYS_FALSE&quot; -&gt; fixedPredicate(children, &quot;(1 = 0)&quot;);</span>
+<span class="nc" id="L389">            case &quot;AND&quot;, &quot;OR&quot; -&gt; logicalPredicate(predicateName, children);</span>
+<span class="nc" id="L390">            case &quot;NOT&quot; -&gt; notPredicate(children);</span>
+<span class="nc" id="L391">            case &quot;IS_NULL&quot;, &quot;IS_NOT_NULL&quot; -&gt; nullPredicate(predicateName, children);</span>
+<span class="nc" id="L392">            case &quot;IN&quot; -&gt; inPredicate(children);</span>
+            case &quot;STARTS_WITH&quot;, &quot;ENDS_WITH&quot;, &quot;CONTAINS&quot; -&gt;
+<span class="nc" id="L394">                    likePredicate(predicateName, children);</span>
+<span class="nc" id="L395">            default -&gt; Optional.empty();</span>
+        };
+    }
+
+    private Optional&lt;String&gt; fixedPredicate(Expression[] children, String sql) {
+<span class="nc bnc" id="L400" title="All 2 branches missed.">        return children.length == 0 ? Optional.of(sql) : Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; logicalPredicate(String name, Expression[] children) {
+<span class="nc bnc" id="L404" title="All 4 branches missed.">        if (children.length != 2 || !(children[0] instanceof Predicate left)</span>
+<span class="nc bnc" id="L405" title="All 2 branches missed.">                || !(children[1] instanceof Predicate right)) {</span>
+<span class="nc" id="L406">            return Optional.empty();</span>
+        }
+<span class="nc" id="L408">        Optional&lt;String&gt; leftSql = toWhereClauseIfSupported(left);</span>
+<span class="nc" id="L409">        Optional&lt;String&gt; rightSql = toWhereClauseIfSupported(right);</span>
+<span class="nc bnc" id="L410" title="All 4 branches missed.">        if (leftSql.isEmpty() || rightSql.isEmpty()) {</span>
+<span class="nc" id="L411">            return Optional.empty();</span>
+        }
+<span class="nc" id="L413">        return Optional.of(&quot;(&quot; + leftSql.get() + &quot; &quot;</span>
+<span class="nc" id="L414">                + name.toLowerCase(Locale.ROOT) + &quot; &quot; + rightSql.get() + &quot;)&quot;);</span>
+    }
+
+    private Optional&lt;String&gt; notPredicate(Expression[] children) {
+<span class="nc bnc" id="L418" title="All 4 branches missed.">        if (children.length != 1 || !(children[0] instanceof Predicate child)) {</span>
+<span class="nc" id="L419">            return Optional.empty();</span>
+        }
+<span class="nc" id="L421">        return toWhereClauseIfSupported(child).map(sql -&gt; &quot;not (&quot; + sql + &quot;)&quot;);</span>
+    }
+
+    private Optional&lt;String&gt; nullPredicate(String name, Expression[] children) {
+<span class="nc bnc" id="L425" title="All 2 branches missed.">        if (children.length != 1) {</span>
+<span class="nc" id="L426">            return Optional.empty();</span>
+        }
+<span class="nc" id="L428">        return predicateOperand(children[0]).map(sql -&gt;</span>
+<span class="nc bnc" id="L429" title="All 2 branches missed.">                sql + (&quot;IS_NULL&quot;.equals(name) ? IS_NULL : IS_NOT_NULL));</span>
+    }
+
+    private Optional&lt;String&gt; comparisonPredicate(String name, Expression[] children) {
+<span class="pc bpc" id="L433" title="1 of 2 branches missed.">        if (children.length != 2) {</span>
+<span class="nc" id="L434">            return Optional.empty();</span>
+        }
+<span class="fc" id="L436">        Optional&lt;String&gt; left = predicateOperand(children[0]);</span>
+<span class="fc" id="L437">        Optional&lt;String&gt; right = predicateOperand(children[1]);</span>
+<span class="pc bpc" id="L438" title="1 of 4 branches missed.">        if (left.isEmpty() || right.isEmpty()) {</span>
+<span class="fc" id="L439">            return Optional.empty();</span>
+        }
+<span class="pc bpc" id="L441" title="1 of 2 branches missed.">        if (&quot;&lt;=&gt;&quot;.equals(name)) {</span>
+<span class="nc" id="L442">            return Optional.of(&quot;((&quot; + left.get() + IS_NOT_NULL + AND</span>
+<span class="nc" id="L443">                    + right.get() + IS_NOT_NULL + AND + left.get() + &quot; = &quot;</span>
+<span class="nc" id="L444">                    + right.get() + &quot;) or (&quot; + left.get() + IS_NULL + AND</span>
+<span class="nc" id="L445">                    + right.get() + IS_NULL + &quot;))&quot;);</span>
+        }
+<span class="fc" id="L447">        return Optional.of(left.get() + &quot; &quot; + name + &quot; &quot; + right.get());</span>
+    }
+
+    private Optional&lt;String&gt; inPredicate(Expression[] children) {
+<span class="nc bnc" id="L451" title="All 2 branches missed.">        if (children.length &lt;= 1) {</span>
+<span class="nc" id="L452">            return Optional.empty();</span>
+        }
+<span class="nc" id="L454">        Optional&lt;String&gt; value = predicateOperand(children[0]);</span>
+<span class="nc bnc" id="L455" title="All 2 branches missed.">        if (value.isEmpty()) {</span>
+<span class="nc" id="L456">            return Optional.empty();</span>
+        }
+<span class="nc" id="L458">        String[] literals = new String[children.length - 1];</span>
+<span class="nc bnc" id="L459" title="All 2 branches missed.">        for (int i = 1; i &lt; children.length; i++) {</span>
+<span class="nc bnc" id="L460" title="All 2 branches missed.">            if (!(children[i] instanceof Literal&lt;?&gt; literal)) {</span>
+<span class="nc" id="L461">                return Optional.empty();</span>
+            }
+<span class="nc" id="L463">            Optional&lt;String&gt; sql = sqlLiteral(literal);</span>
+<span class="nc bnc" id="L464" title="All 2 branches missed.">            if (sql.isEmpty()) {</span>
+<span class="nc" id="L465">                return Optional.empty();</span>
+            }
+<span class="nc" id="L467">            literals[i - 1] = sql.get();</span>
+        }
+<span class="nc" id="L469">        return Optional.of(value.get() + &quot; in (&quot; + String.join(&quot;,&quot;, literals) + &quot;)&quot;);</span>
+    }
+
+    private Optional&lt;String&gt; likePredicate(String name, Expression[] children) {
+<span class="nc bnc" id="L473" title="All 4 branches missed.">        if (children.length != 2 || !(children[0] instanceof NamedReference reference)</span>
+<span class="nc bnc" id="L474" title="All 2 branches missed.">                || !(children[1] instanceof Literal&lt;?&gt; literal)) {</span>
+<span class="nc" id="L475">            return Optional.empty();</span>
+        }
+<span class="nc" id="L477">        Optional&lt;String&gt; attribute = predicateReference(reference);</span>
+<span class="nc" id="L478">        Optional&lt;String&gt; value = stringLiteralValue(literal);</span>
+<span class="nc bnc" id="L479" title="All 4 branches missed.">        if (attribute.isEmpty() || value.isEmpty()) {</span>
+<span class="nc" id="L480">            return Optional.empty();</span>
+        }
+<span class="nc" id="L482">        String escaped = escapeLike(value.get());</span>
+<span class="nc bnc" id="L483" title="All 3 branches missed.">        String pattern = switch (name) {</span>
+<span class="nc" id="L484">            case &quot;STARTS_WITH&quot; -&gt; escaped + &quot;%&quot;;</span>
+<span class="nc" id="L485">            case &quot;ENDS_WITH&quot; -&gt; &quot;%&quot; + escaped;</span>
+<span class="nc" id="L486">            default -&gt; &quot;%&quot; + escaped + &quot;%&quot;;</span>
+        };
+<span class="nc" id="L488">        return Optional.of(attribute.get() + &quot; like &quot; + quoteString(pattern)</span>
+                + &quot; escape '\\'&quot;);
+    }
+
+    private Optional&lt;String&gt; predicateOperand(Expression expression) {
+<span class="fc bfc" id="L493" title="All 2 branches covered.">        if (expression instanceof NamedReference reference) {</span>
+<span class="fc" id="L494">            return predicateReference(reference);</span>
+        }
+<span class="fc bfc" id="L496" title="All 2 branches covered.">        if (expression instanceof Literal&lt;?&gt; literal) {</span>
+<span class="fc" id="L497">            return sqlLiteral(literal);</span>
+        }
+<span class="fc" id="L499">        return Optional.empty();</span>
+    }
+
+    /**
+     * Translates a single-column Spark reference.
+     *
+     * @param reference Spark column reference
+     * @return quoted SQL identifier when supported
+     */
+    private Optional&lt;String&gt; predicateReference(NamedReference reference) {
+<span class="fc" id="L509">        String[] fields = reference.fieldNames();</span>
+<span class="pc bpc" id="L510" title="3 of 6 branches missed.">        if (fields == null || fields.length != 1 || fields[0] == null</span>
+<span class="pc bpc" id="L511" title="1 of 2 branches missed.">                || fields[0].isBlank()) {</span>
+<span class="nc" id="L512">            return Optional.empty();</span>
+        }
+<span class="fc" id="L514">        return Optional.of(quoteIdentifier(fields[0]));</span>
+    }
+
+    /**
+     * Translates a typed Spark V2 literal.
+     *
+     * @param literal typed Spark literal
+     * @return SQL literal when supported
+     */
+    private Optional&lt;String&gt; sqlLiteral(Literal&lt;?&gt; literal) {
+<span class="fc" id="L524">        Object value = literal.value();</span>
+<span class="pc bpc" id="L525" title="1 of 2 branches missed.">        if (value == null) {</span>
+<span class="nc" id="L526">            return Optional.of(&quot;null&quot;);</span>
+        }
+<span class="pc bpc" id="L528" title="1 of 4 branches missed.">        if (literal.dataType().equals(DataTypes.DateType) &amp;&amp; value instanceof Number days) {</span>
+<span class="fc" id="L529">            return Optional.of(quoteString(LocalDate.ofEpochDay(days.longValue()).toString()));</span>
+        }
+<span class="pc bpc" id="L531" title="1 of 2 branches missed.">        if ((literal.dataType().equals(DataTypes.TimestampType)</span>
+<span class="pc bpc" id="L532" title="3 of 4 branches missed.">                || literal.dataType().equals(DataTypes.TimestampNTZType))</span>
+<span class="nc" id="L533">                &amp;&amp; value instanceof Number micros) {</span>
+<span class="nc" id="L534">            long epochMicros = micros.longValue();</span>
+<span class="nc" id="L535">            long seconds = Math.floorDiv(epochMicros, 1_000_000L);</span>
+<span class="nc" id="L536">            int nanos = Math.toIntExact(Math.floorMod(epochMicros, 1_000_000L) * 1_000L);</span>
+<span class="nc" id="L537">            LocalDateTime timestamp = LocalDateTime.ofInstant(</span>
+<span class="nc" id="L538">                    Instant.ofEpochSecond(seconds, nanos), ZoneOffset.UTC);</span>
+<span class="nc" id="L539">            return Optional.of(quoteString(timestamp.toString().replace('T', ' ')));</span>
+        }
+<span class="pc bpc" id="L541" title="1 of 2 branches missed.">        if (literal.dataType().equals(DataTypes.StringType)) {</span>
+<span class="nc" id="L542">            return Optional.of(quoteString(value.toString()));</span>
+        }
+<span class="pc bpc" id="L544" title="1 of 2 branches missed.">        if (value instanceof org.apache.spark.sql.types.Decimal decimal) {</span>
+<span class="nc" id="L545">            return Optional.of(decimal.toPlainString());</span>
+        }
+<span class="fc" id="L547">        return sqlLiteral(value, true);</span>
+    }
+
+    /**
+     * Extracts a non-null Spark string literal.
+     *
+     * @param literal typed Spark literal
+     * @return string value when supported
+     */
+    private static Optional&lt;String&gt; stringLiteralValue(Literal&lt;?&gt; literal) {
+<span class="nc bnc" id="L557" title="All 4 branches missed.">        if (literal.value() == null || !literal.dataType().equals(DataTypes.StringType)) {</span>
+<span class="nc" id="L558">            return Optional.empty();</span>
+        }
+<span class="nc" id="L560">        return Optional.of(literal.value().toString());</span>
+    }
+
+    /**
+     * Returns whether a predicate name is a supported comparison operator.
+     *
+     * @param name normalized predicate name
+     * @return true for supported comparisons
+     */
+    private static boolean isComparisonPredicate(String name) {
+<span class="pc bpc" id="L570" title="3 of 6 branches missed.">        return &quot;=&quot;.equals(name) || &quot;&lt;&gt;&quot;.equals(name) || &quot;&lt;=&gt;&quot;.equals(name)</span>
+<span class="pc bpc" id="L571" title="1 of 4 branches missed.">                || &quot;&lt;&quot;.equals(name) || &quot;&lt;=&quot;.equals(name)</span>
+<span class="pc bpc" id="L572" title="1 of 4 branches missed.">                || &quot;&gt;&quot;.equals(name) || &quot;&gt;=&quot;.equals(name);</span>
+    }
+
+    /**
+     * Attempts to translate a complete Spark filter.
+     *
+     * @param filter Spark filter
+     * @return translated SQL clause when every expression is supported
+     */
+    private Optional&lt;String&gt; toWhereClauseIfSupported(Filter filter) {
+<span class="pc bpc" id="L582" title="1 of 2 branches missed.">        if (filter == null) {</span>
+<span class="nc" id="L583">            return Optional.empty();</span>
+        }
+<span class="fc" id="L585">        Optional&lt;String&gt; result = comparisonFilter(filter);</span>
+<span class="fc bfc" id="L586" title="All 2 branches covered.">        if (result.isPresent()) {</span>
+<span class="fc" id="L587">            return result;</span>
+        }
+<span class="fc" id="L589">        result = logicalFilter(filter);</span>
+<span class="fc bfc" id="L590" title="All 2 branches covered.">        if (result.isPresent()) {</span>
+<span class="fc" id="L591">            return result;</span>
+        }
+<span class="fc" id="L593">        result = unaryFilter(filter);</span>
+<span class="fc bfc" id="L594" title="All 2 branches covered.">        if (result.isPresent()) {</span>
+<span class="fc" id="L595">            return result;</span>
+        }
+<span class="fc" id="L597">        result = nullFilter(filter);</span>
+<span class="fc bfc" id="L598" title="All 2 branches covered.">        if (result.isPresent()) {</span>
+<span class="fc" id="L599">            return result;</span>
+        }
+<span class="fc" id="L601">        result = stringFilter(filter);</span>
+<span class="fc bfc" id="L602" title="All 2 branches covered.">        return result.isPresent() ? result : inFilter(filter);</span>
+    }
+
+    private Optional&lt;String&gt; comparisonFilter(Filter filter) {
+<span class="fc bfc" id="L606" title="All 2 branches covered.">        if (filter instanceof EqualTo equalTo) {</span>
+<span class="fc" id="L607">            return comparison(equalTo.attribute(), &quot;=&quot;, equalTo.value());</span>
+        }
+<span class="fc bfc" id="L609" title="All 2 branches covered.">        if (filter instanceof EqualNullSafe equalNullSafe) {</span>
+<span class="fc" id="L610">            return equalNullSafeFilter(equalNullSafe);</span>
+        }
+<span class="fc bfc" id="L612" title="All 2 branches covered.">        if (filter instanceof LessThan lessThan) {</span>
+<span class="fc" id="L613">            return comparison(lessThan.attribute(), &quot;&lt;&quot;, lessThan.value());</span>
+        }
+<span class="fc bfc" id="L615" title="All 2 branches covered.">        if (filter instanceof LessThanOrEqual lessThanOrEqual) {</span>
+<span class="fc" id="L616">            return comparison(lessThanOrEqual.attribute(), &quot;&lt;=&quot;, lessThanOrEqual.value());</span>
+        }
+<span class="fc bfc" id="L618" title="All 2 branches covered.">        if (filter instanceof GreaterThan greaterThan) {</span>
+<span class="fc" id="L619">            return comparison(greaterThan.attribute(), &quot;&gt;&quot;, greaterThan.value());</span>
+        }
+<span class="fc bfc" id="L621" title="All 2 branches covered.">        if (filter instanceof GreaterThanOrEqual greaterThanOrEqual) {</span>
+<span class="fc" id="L622">            return comparison(greaterThanOrEqual.attribute(), &quot;&gt;=&quot;, greaterThanOrEqual.value());</span>
+        }
+<span class="fc" id="L624">        return Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; equalNullSafeFilter(EqualNullSafe filter) {
+<span class="fc bfc" id="L628" title="All 2 branches covered.">        if (filter.value() == null) {</span>
+<span class="fc" id="L629">            return Optional.of(quoteIdentifier(filter.attribute()) + IS_NULL);</span>
+        }
+<span class="fc" id="L631">        Optional&lt;String&gt; equality = comparison(filter.attribute(), &quot;=&quot;, filter.value());</span>
+<span class="fc" id="L632">        String identifier = quoteIdentifier(filter.attribute());</span>
+<span class="fc" id="L633">        return equality.map(sql -&gt; &quot;(&quot; + identifier + IS_NOT_NULL + AND + sql + &quot;)&quot;);</span>
+    }
+
+    private Optional&lt;String&gt; logicalFilter(Filter filter) {
+<span class="fc bfc" id="L637" title="All 2 branches covered.">        if (filter instanceof And and) {</span>
+<span class="fc" id="L638">            return combine(and.left(), AND_OPERATOR, and.right());</span>
+        }
+<span class="fc bfc" id="L640" title="All 2 branches covered.">        if (filter instanceof Or or) {</span>
+<span class="fc" id="L641">            return combine(or.left(), &quot;or&quot;, or.right());</span>
+        }
+<span class="fc" id="L643">        return Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; unaryFilter(Filter filter) {
+<span class="fc bfc" id="L647" title="All 2 branches covered.">        if (filter instanceof Not not) {</span>
+<span class="fc" id="L648">            return toWhereClauseIfSupported(not.child()).map(sql -&gt; &quot;not (&quot; + sql + &quot;)&quot;);</span>
+        }
+<span class="fc" id="L650">        return Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; nullFilter(Filter filter) {
+<span class="fc bfc" id="L654" title="All 2 branches covered.">        if (filter instanceof IsNull isNull) {</span>
+<span class="fc" id="L655">            return Optional.of(quoteIdentifier(isNull.attribute()) + IS_NULL);</span>
+        }
+<span class="fc bfc" id="L657" title="All 2 branches covered.">        if (filter instanceof IsNotNull isNotNull) {</span>
+<span class="fc" id="L658">            return Optional.of(quoteIdentifier(isNotNull.attribute()) + IS_NOT_NULL);</span>
+        }
+<span class="fc" id="L660">        return Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; stringFilter(Filter filter) {
+<span class="fc bfc" id="L664" title="All 2 branches covered.">        if (filter instanceof StringStartsWith startsWith) {</span>
+<span class="fc" id="L665">            return Optional.of(like(startsWith.attribute(), escapeLike(startsWith.value()) + &quot;%&quot;));</span>
+        }
+<span class="fc bfc" id="L667" title="All 2 branches covered.">        if (filter instanceof StringContains contains) {</span>
+<span class="fc" id="L668">            return Optional.of(like(contains.attribute(), &quot;%&quot; + escapeLike(contains.value()) + &quot;%&quot;));</span>
+        }
+<span class="fc bfc" id="L670" title="All 2 branches covered.">        if (filter instanceof StringEndsWith endsWith) {</span>
+<span class="fc" id="L671">            return Optional.of(like(endsWith.attribute(), &quot;%&quot; + escapeLike(endsWith.value())));</span>
+        }
+<span class="fc" id="L673">        return Optional.empty();</span>
+    }
+
+    private Optional&lt;String&gt; inFilter(Filter filter) {
+<span class="fc bfc" id="L677" title="All 2 branches covered.">        if (!(filter instanceof In in)) {</span>
+<span class="fc" id="L678">            return Optional.empty();</span>
+        }
+<span class="fc" id="L680">        Object[] values = in.values();</span>
+<span class="pc bpc" id="L681" title="1 of 4 branches missed.">        if (values == null || values.length == 0) {</span>
+<span class="fc" id="L682">            return Optional.of(&quot;(1 = 0)&quot;);</span>
+        }
+<span class="fc" id="L684">        String[] literals = new String[values.length];</span>
+<span class="fc bfc" id="L685" title="All 2 branches covered.">        for (int i = 0; i &lt; values.length; i++) {</span>
+<span class="fc" id="L686">            Optional&lt;String&gt; literal = sqlLiteral(values[i], true);</span>
+<span class="pc bpc" id="L687" title="1 of 2 branches missed.">            if (literal.isEmpty()) {</span>
+<span class="nc" id="L688">                return Optional.empty();</span>
+            }
+<span class="fc" id="L690">            literals[i] = literal.get();</span>
+        }
+<span class="fc" id="L692">        return Optional.of(String.format(&quot;%s in (%s)&quot;, quoteIdentifier(in.attribute()),</span>
+<span class="fc" id="L693">                String.join(&quot;,&quot;, literals)));</span>
+    }
+
+    private Optional&lt;String&gt; comparison(String attribute, String operator, Object value) {
+<span class="fc bfc" id="L697" title="All 2 branches covered.">        if (value == null) {</span>
+<span class="fc" id="L698">            return Optional.empty();</span>
+        }
+<span class="fc" id="L700">        return sqlLiteral(value, false).map(literal -&gt;</span>
+<span class="fc" id="L701">                String.format(&quot;%s %s %s&quot;, quoteIdentifier(attribute), operator, literal));</span>
+    }
+
+    private Optional&lt;String&gt; combine(Filter left, String operator, Filter right) {
+<span class="fc" id="L705">        Optional&lt;String&gt; leftSql = toWhereClauseIfSupported(left);</span>
+<span class="fc" id="L706">        Optional&lt;String&gt; rightSql = toWhereClauseIfSupported(right);</span>
+<span class="pc bpc" id="L707" title="1 of 4 branches missed.">        if (leftSql.isEmpty() || rightSql.isEmpty()) {</span>
+<span class="fc" id="L708">            return Optional.empty();</span>
+        }
+<span class="fc" id="L710">        return Optional.of(String.format(&quot;(%s %s %s)&quot;, leftSql.get(), operator, rightSql.get()));</span>
+    }
+
+    private Optional&lt;String&gt; sqlLiteral(Object value, boolean allowNull) {
+<span class="pc bpc" id="L714" title="1 of 6 branches missed.">        switch (value) {</span>
+            case null -&gt; {
+<span class="nc bnc" id="L716" title="All 2 branches missed.">                return allowNull ? Optional.of(&quot;null&quot;) : Optional.empty();</span>
+            }
+<span class="pc bpc" id="L718" title="1 of 2 branches missed.">            case Double number when !Double.isFinite(number) -&gt; {</span>
+<span class="fc" id="L719">                return Optional.empty();</span>
+            }
+<span class="fc bfc" id="L721" title="All 2 branches covered.">            case Float number when !Float.isFinite(number) -&gt; {</span>
+<span class="fc" id="L722">                return Optional.empty();</span>
+            }
+<span class="fc" id="L724">            case Number ignored1 -&gt; {</span>
+<span class="fc" id="L725">                return Optional.of(value.toString());</span>
+            }
+<span class="fc" id="L727">            case Boolean ignored -&gt; {</span>
+<span class="fc" id="L728">                return Optional.of(value.toString());</span>
+            }
+            default -&gt; {
+<span class="pc bpc" id="L731" title="11 of 12 branches missed.">                if (value instanceof CharSequence || value instanceof Character</span>
+                        || value instanceof Date || value instanceof Time
+                        || value instanceof Timestamp || value instanceof TemporalAccessor) {
+<span class="fc" id="L734">                    return Optional.of(quoteString(value.toString()));</span>
+                }
+<span class="nc" id="L736">                return Optional.empty();</span>
+            }
+        }
+    }
+
+    private String quoteIdentifier(String identifier) {
+<span class="pc bpc" id="L742" title="2 of 4 branches missed.">        if (this.columnQuote == null || this.columnQuote.isEmpty()) {</span>
+<span class="nc" id="L743">            return identifier;</span>
+        }
+<span class="fc" id="L745">        return this.columnQuote + identifier.replace(this.columnQuote, this.columnQuote + this.columnQuote) + this.columnQuote;</span>
+    }
+
+    private static String quoteString(String value) {
+<span class="fc" id="L749">        return &quot;'&quot; + value.replace(&quot;'&quot;, &quot;''&quot;) + &quot;'&quot;;</span>
+    }
+
+    private String like(String attribute, String pattern) {
+<span class="fc" id="L753">        return quoteIdentifier(attribute) + &quot; like &quot; + quoteString(pattern) + &quot; escape '\\'&quot;;</span>
+    }
+
+    private static String escapeLike(String value) {
+<span class="fc" id="L757">        return value.replace(&quot;\\&quot;, &quot;\\\\&quot;).replace(&quot;%&quot;, &quot;\\%&quot;).replace(&quot;_&quot;, &quot;\\_&quot;);</span>
+    }
+
+    /**
+     * Probe if the pushed filter, fields and aggregation would affect the existing schema &amp; end-points
+     * @param pushedFilter - the pushed filter
+     * @param pushedFields - the pushed fields
+     * @param pushedAggregation - the pushed aggregation
+     * @param partitionBehavior - the partitioning behavior
+     * @return - true if initialization is required
+     */
+    public Boolean probe(String pushedFilter, StructField[] pushedFields, PushAggregation pushedAggregation, PartitionBehavior partitionBehavior) {
+<span class="pc bpc" id="L769" title="4 of 10 branches missed.">        if ((pushedFilter == null || pushedFilter.isEmpty()) &amp;&amp; (pushedFields == null || pushedFields.length == 0) &amp;&amp; pushedAggregation == null) {</span>
+<span class="fc" id="L770">            return false;</span>
+        }
+<span class="fc" id="L772">        return this.prepareQueryStatement(pushedAggregation, pushedFields, pushedFilter, partitionBehavior);</span>
+    }
+
+    /**
+     * Table with name
+     * @param tableName - the name of a table
+     * @param columnQuote - the character for quoting columns in sql statements
+     * @return - a Table object
+     */
+    public static Table forTable(String tableName, String columnQuote) {
+<span class="fc" id="L782">        Function&lt;String, Boolean&gt; isQuery = (t) -&gt; t.replaceAll(&quot;[\r|\n]&quot;, &quot; &quot;).trim().toLowerCase().matches(&quot;^select .+ [from]?.+&quot;);</span>
+<span class="fc bfc" id="L783" title="All 2 branches covered.">        return new Table(isQuery.apply(tableName) ? String.format(&quot;(%s) t&quot;, tableName) : tableName, columnQuote);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

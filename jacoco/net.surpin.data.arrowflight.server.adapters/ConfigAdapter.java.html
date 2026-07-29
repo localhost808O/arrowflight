@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConfigAdapter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.adapters</a> &gt; <span class="el_source">ConfigAdapter.java</span></div><h1>ConfigAdapter.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.adapters;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Properties;
+
+import net.surpin.data.arrowflight.server.model.AppConfig;
+
+/**
+ * Loads configuration from arrowflight.properties, system properties, and environment variables.
+ * Produces an immutable AppConfig record.
+ */
+public class ConfigAdapter {
+
+    private static final String CONFIG_RESOURCE = &quot;arrowflight.properties&quot;;
+
+    /**
+     * Utility class, no instantiation.
+     */
+    private ConfigAdapter() {
+    }
+
+    /**
+     * Loads and returns the complete server configuration.
+     *
+     * @return resolved AppConfig
+     */
+    public static AppConfig getConfig() {
+<span class="fc" id="L29">        Properties props = loadProperties();</span>
+<span class="fc" id="L30">        int ioParallelism = computeIoParallelism(props);</span>
+<span class="fc" id="L31">        int numServers = getInt(&quot;numServers&quot;, &quot;arrowflight.cluster.numServers&quot;, 3, props);</span>
+<span class="fc" id="L32">        int batchSize = getInt(&quot;batchSize&quot;, &quot;arrowflight.duckdb.batchSize&quot;, 65536, props);</span>
+<span class="fc" id="L33">        int ioFileBufferSize = getInt(&quot;ioFileBufferSize&quot;, null, 131072, props);</span>
+<span class="fc" id="L34">        int duckDbWarmConnections = getInt(&quot;duckDbWarmConnections&quot;,</span>
+<span class="fc" id="L35">                &quot;arrowflight.duckdb.warmConnections&quot;, Math.min(8, ioParallelism), props);</span>
+<span class="fc" id="L36">        int duckDbGroups = getInt(&quot;duckDbGroups&quot;,</span>
+<span class="fc" id="L37">                &quot;arrowflight.duckdb.groups&quot;, Math.min(8, ioParallelism), props);</span>
+<span class="fc" id="L38">        int duckDbThreads = getInt(&quot;duckDbThreads&quot;, &quot;arrowflight.duckdb.threads&quot;, 1, props);</span>
+<span class="fc" id="L39">        String duckDbHdfsExtension = getStringWithEnv(&quot;duckDbHdfsExtension&quot;,</span>
+                &quot;arrowflight.duckdb.hdfs.extension&quot;, &quot;DUCKDB_HDFS_EXTENSION&quot;, null, props);
+<span class="fc" id="L41">        boolean duckDbAllowUnsignedExtensions = getBooleanWithEnv(&quot;duckDbAllowUnsignedExtensions&quot;,</span>
+                &quot;arrowflight.duckdb.allowUnsignedExtensions&quot;, &quot;DUCKDB_ALLOW_UNSIGNED_EXTENSIONS&quot;,
+                false, props);
+<span class="fc" id="L44">        String duckDbHdfsDefaultNamenode = getStringWithEnv(&quot;duckDbHdfsDefaultNamenode&quot;,</span>
+                &quot;arrowflight.duckdb.hdfs.defaultNamenode&quot;, &quot;HDFS_DEFAULT_NAMENODE&quot;, null, props);
+<span class="fc" id="L46">        String duckDbHdfsHaNamenodes = getStringWithEnv(&quot;duckDbHdfsHaNamenodes&quot;,</span>
+                &quot;arrowflight.duckdb.hdfs.haNamenodes&quot;, &quot;HDFS_HA_NAMENODES&quot;, null, props);
+<span class="fc" id="L48">        String duckDbHdfsShortcircuit = getStringWithEnv(&quot;duckDbHdfsShortcircuit&quot;,</span>
+                &quot;arrowflight.duckdb.hdfs.shortcircuit&quot;, &quot;HDFS_SHORTCIRCUIT&quot;, null, props);
+<span class="fc" id="L50">        String duckDbHdfsDomainSocketPath = getStringWithEnv(&quot;duckDbHdfsDomainSocketPath&quot;,</span>
+                &quot;arrowflight.duckdb.hdfs.domainSocketPath&quot;, &quot;HDFS_DOMAIN_SOCKET_PATH&quot;, null, props);
+<span class="fc" id="L52">        boolean metricsEnabled = getBooleanWithEnv(&quot;metricsEnabled&quot;,</span>
+                &quot;arrowflight.metrics.enabled&quot;, &quot;FLIGHT_METRICS_ENABLED&quot;, false, props);
+<span class="fc" id="L54">        int grpcMaxInboundMessageSize = getInt(&quot;grpcMaxInboundMessageSize&quot;,</span>
+                &quot;arrowflight.grpc.maxInboundMessageSize&quot;, Integer.MAX_VALUE, props);
+<span class="fc" id="L56">        int flightBackpressureThresholdBytes = getInt(&quot;flightBackpressureThresholdBytes&quot;,</span>
+                &quot;arrowflight.flight.backpressureThresholdBytes&quot;, 67_108_864, props);
+<span class="fc bfc" id="L58" title="All 2 branches covered.">        if (flightBackpressureThresholdBytes &lt;= 0) {</span>
+<span class="fc" id="L59">            throw new IllegalArgumentException(</span>
+                    &quot;flightBackpressureThresholdBytes must be positive: &quot;
+                            + flightBackpressureThresholdBytes);
+        }
+<span class="fc" id="L63">        long flightListenerReadyTimeoutMillis = getLong(&quot;flightListenerReadyTimeoutMs&quot;,</span>
+                &quot;arrowflight.flight.listenerReadyTimeoutMs&quot;, 300_000L, props);
+<span class="fc bfc" id="L65" title="All 2 branches covered.">        if (flightListenerReadyTimeoutMillis &lt;= 0) {</span>
+<span class="fc" id="L66">            throw new IllegalArgumentException(</span>
+                    &quot;flightListenerReadyTimeoutMs must be positive: &quot;
+                            + flightListenerReadyTimeoutMillis);
+        }
+<span class="fc" id="L70">        String dataDir = getString(&quot;dataDir&quot;, null, &quot;/data/parquet&quot;, props);</span>
+<span class="fc" id="L71">        String localDataDir = getStringWithEnv(&quot;localDataDir&quot;, &quot;arrowflight.localDataDir&quot;,</span>
+                &quot;FLIGHT_LOCAL_DATA_DIR&quot;, null, props);
+<span class="fc" id="L73">        int port = getInt(&quot;port&quot;, null, 32010, props);</span>
+<span class="fc" id="L74">        int hazelcastPort = getInt(&quot;hazelcastPort&quot;, null, 5701, props);</span>
+<span class="fc" id="L75">        int hazelcastClusterJoinTimeoutSec = getInt(&quot;hazelcastClusterJoinTimeoutSec&quot;,</span>
+                &quot;arrowflight.hazelcast.clusterJoinTimeoutSec&quot;, 60, props);
+<span class="fc" id="L77">        int clientMaxRetries = getInt(&quot;client.maxRetries&quot;, null, 3, props);</span>
+<span class="fc" id="L78">        int clientRetryBackoffMs = getInt(&quot;client.retryBackoffMs&quot;, null, 1000, props);</span>
+<span class="fc" id="L79">        int clientConnectTimeoutMs = getInt(&quot;client.connectTimeoutMs&quot;, null, 0, props);</span>
+
+<span class="fc" id="L81">        return new AppConfig(</span>
+                numServers, batchSize, ioParallelism, ioFileBufferSize,
+                duckDbWarmConnections, duckDbGroups, duckDbThreads,
+                duckDbHdfsExtension, duckDbAllowUnsignedExtensions,
+                duckDbHdfsDefaultNamenode, duckDbHdfsHaNamenodes,
+                duckDbHdfsShortcircuit, duckDbHdfsDomainSocketPath,
+                metricsEnabled,
+                grpcMaxInboundMessageSize, flightBackpressureThresholdBytes,
+                flightListenerReadyTimeoutMillis,
+                dataDir, localDataDir, port, hazelcastPort, hazelcastClusterJoinTimeoutSec,
+                clientMaxRetries, clientRetryBackoffMs, clientConnectTimeoutMs);
+    }
+
+    /**
+     * Computes I/O thread pool parallelism from config, cores, and constraints.
+     *
+     * @param props loaded properties
+     * @return thread count (clamped to 64)
+     */
+    private static int computeIoParallelism(Properties props) {
+<span class="fc" id="L101">        Integer explicit = getOptionalInt(&quot;ioParallelism&quot;, &quot;arrowflight.io.parallelism&quot;, props);</span>
+<span class="pc bpc" id="L102" title="2 of 4 branches missed.">        if (explicit != null &amp;&amp; explicit &gt; 0) {</span>
+<span class="fc" id="L103">            return Math.min(explicit, 64);</span>
+        }
+<span class="nc" id="L105">        int availableCores = Runtime.getRuntime().availableProcessors();</span>
+<span class="nc" id="L106">        int maxCores = getInt(&quot;ioParallelismMaxCores&quot;, &quot;arrowflight.io.maxCores&quot;, 8, props);</span>
+<span class="nc bnc" id="L107" title="All 2 branches missed.">        int effectiveCores = maxCores &gt; 0 ? Math.min(availableCores, maxCores) : availableCores;</span>
+<span class="nc" id="L108">        int multiplier = getInt(&quot;ioParallelismMultiplier&quot;, &quot;arrowflight.io.parallelismMultiplier&quot;, 8, props);</span>
+<span class="nc" id="L109">        int minThreads = getInt(&quot;ioParallelismMinThreads&quot;, &quot;arrowflight.io.minParallelism&quot;, 32, props);</span>
+<span class="nc" id="L110">        return Math.min(64, Math.max(minThreads, effectiveCores * multiplier));</span>
+    }
+
+    /**
+     * Reads a string config from system property or properties file.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param fallback default value
+     * @param props    loaded properties
+     * @return resolved value
+     */
+    private static String getString(String key, String sysAlias, String fallback, Properties props) {
+<span class="fc" id="L123">        String value = System.getProperty(key);</span>
+<span class="pc bpc" id="L124" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L125">            value = props.getProperty(key);</span>
+        }
+<span class="pc bpc" id="L127" title="2 of 6 branches missed.">        if ((value == null || value.isBlank()) &amp;&amp; sysAlias != null) {</span>
+<span class="fc" id="L128">            value = System.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L130" title="2 of 6 branches missed.">        if ((value == null || value.isBlank()) &amp;&amp; sysAlias != null) {</span>
+<span class="fc" id="L131">            value = props.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L133" title="1 of 4 branches missed.">        return value == null || value.isBlank() ? fallback : value.trim();</span>
+    }
+
+    /**
+     * Reads a string config with environment variable fallback.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param envName  environment variable name
+     * @param fallback default value
+     * @param props    loaded properties
+     * @return resolved value
+     */
+    private static String getStringWithEnv(String key, String sysAlias, String envName,
+            String fallback, Properties props) {
+<span class="fc" id="L148">        String value = System.getProperty(key);</span>
+<span class="pc bpc" id="L149" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L150">            value = props.getProperty(key);</span>
+        }
+<span class="pc bpc" id="L152" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L153">            value = System.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L155" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L156">            value = props.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L158" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L159">            String env = System.getenv(envName);</span>
+<span class="pc bpc" id="L160" title="3 of 4 branches missed.">            if (env != null &amp;&amp; !env.isBlank()) {</span>
+<span class="nc" id="L161">                value = env;</span>
+            }
+        }
+<span class="pc bpc" id="L164" title="1 of 4 branches missed.">        return value == null || value.isBlank() ? fallback : value.trim();</span>
+    }
+
+    /**
+     * Reads an integer config with fallback.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param fallback default value
+     * @param props    loaded properties
+     * @return resolved value
+     */
+    private static int getInt(String key, String sysAlias, int fallback, Properties props) {
+<span class="fc" id="L177">        String raw = getString(key, sysAlias, String.valueOf(fallback), props);</span>
+        try {
+<span class="fc" id="L179">            return Integer.parseInt(raw);</span>
+<span class="fc" id="L180">        } catch (NumberFormatException e) {</span>
+<span class="fc" id="L181">            throw new IllegalArgumentException(&quot;Invalid integer for &quot; + key + &quot;: &quot; + raw, e);</span>
+        }
+    }
+
+    /**
+     * Reads an optional integer config, returns null if not set.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param props    loaded properties
+     * @return integer value or null
+     */
+    private static Integer getOptionalInt(String key, String sysAlias, Properties props) {
+<span class="fc" id="L194">        String value = System.getProperty(key);</span>
+<span class="pc bpc" id="L195" title="1 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="fc" id="L196">            value = props.getProperty(key);</span>
+        }
+<span class="pc bpc" id="L198" title="4 of 6 branches missed.">        if ((value == null || value.isBlank()) &amp;&amp; sysAlias != null) {</span>
+<span class="nc" id="L199">            value = System.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L201" title="4 of 6 branches missed.">        if ((value == null || value.isBlank()) &amp;&amp; sysAlias != null) {</span>
+<span class="nc" id="L202">            value = props.getProperty(sysAlias);</span>
+        }
+<span class="pc bpc" id="L204" title="2 of 4 branches missed.">        if (value == null || value.isBlank()) {</span>
+<span class="nc" id="L205">            return null;</span>
+        }
+        try {
+<span class="fc" id="L208">            return Integer.parseInt(value.trim());</span>
+<span class="nc" id="L209">        } catch (NumberFormatException e) {</span>
+<span class="nc" id="L210">            throw new IllegalArgumentException(&quot;Invalid integer for &quot; + key + &quot;: &quot; + value, e);</span>
+        }
+    }
+
+    /**
+     * Reads a boolean config with environment variable fallback.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param envName  environment variable name
+     * @param fallback default value
+     * @param props    loaded properties
+     * @return resolved value
+     */
+    private static boolean getBooleanWithEnv(String key, String sysAlias, String envName,
+            boolean fallback, Properties props) {
+<span class="fc" id="L226">        String value = getStringWithEnv(key, sysAlias, envName, null, props);</span>
+<span class="fc bfc" id="L227" title="All 2 branches covered.">        return value == null ? fallback : Boolean.parseBoolean(value);</span>
+    }
+
+    /**
+     * Reads a long config with fallback.
+     *
+     * @param key      primary config key
+     * @param sysAlias secondary system property key
+     * @param fallback default value
+     * @param props    loaded properties
+     * @return resolved value
+     */
+    private static long getLong(String key, String sysAlias, long fallback, Properties props) {
+<span class="fc" id="L240">        String raw = getString(key, sysAlias, String.valueOf(fallback), props);</span>
+        try {
+<span class="fc" id="L242">            return Long.parseLong(raw);</span>
+<span class="nc" id="L243">        } catch (NumberFormatException e) {</span>
+<span class="nc" id="L244">            throw new IllegalArgumentException(&quot;Invalid long for &quot; + key + &quot;: &quot; + raw, e);</span>
+        }
+    }
+
+    /**
+     * Loads properties from classpath resource.
+     *
+     * @return loaded Properties
+     */
+    private static Properties loadProperties() {
+<span class="fc" id="L254">        Properties properties = new Properties();</span>
+<span class="fc" id="L255">        try (InputStream input = ConfigAdapter.class.getClassLoader().getResourceAsStream(CONFIG_RESOURCE)) {</span>
+<span class="pc bpc" id="L256" title="1 of 2 branches missed.">            if (input != null) {</span>
+<span class="fc" id="L257">                properties.load(input);</span>
+            }
+<span class="nc" id="L259">        } catch (IOException e) {</span>
+<span class="nc" id="L260">            throw new ExceptionInInitializerError(e);</span>
+<span class="fc" id="L261">        }</span>
+<span class="fc" id="L262">        return properties;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExecutionPathRecorder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.metrics</a> &gt; <span class="el_source">ExecutionPathRecorder.java</span></div><h1>ExecutionPathRecorder.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.metrics;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import net.surpin.data.arrowflight.server.LogUtil;
+import net.surpin.data.arrowflight.server.model.ExecutionPath;
+import net.surpin.data.arrowflight.server.model.ExecutionPathTracker;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.HexFormat;
+import java.util.Locale;
+
+/**
+ * Emits structured runtime execution-path evidence for benchmark collection.
+ */
+public final class ExecutionPathRecorder {
+
+<span class="fc" id="L28">    private static final Logger LOGGER = LoggerFactory.getLogger(ExecutionPathRecorder.class);</span>
+<span class="fc" id="L29">    private static final ObjectMapper JSON = new ObjectMapper();</span>
+<span class="fc" id="L30">    private static final Object FILE_LOCK = new Object();</span>
+    private static final String OUTPUT_ENV = &quot;BENCHMARK_EXECUTION_PATH_LOG&quot;;
+
+    private ExecutionPathRecorder() {
+    }
+
+    /**
+     * Emits one execution-path event to logs and the optional JSONL evidence file.
+     *
+     * @param qid endpoint query identifier
+     * @param query logical SQL query
+     * @param tracker runtime path tracker
+     * @param success whether execution completed successfully
+     * @param failureReason failure description or null
+     */
+    public static void recordEvent(String qid, String query, ExecutionPathTracker tracker,
+            boolean success, String failureReason) {
+<span class="fc" id="L47">        String event = toJson(qid, query, tracker, success, failureReason);</span>
+<span class="fc" id="L48">        ExecutionPath path = tracker.path();</span>
+<span class="fc" id="L49">        LOGGER.info(&quot;qid={} node={} executionPath={} pushdownEvidence={} success={} event={}&quot;,</span>
+<span class="fc" id="L50">                qid, LogUtil.node(), path.label(), path.isPushdownEvidence(), success, event);</span>
+
+<span class="fc" id="L52">        String output = System.getenv(OUTPUT_ENV);</span>
+<span class="pc bpc" id="L53" title="3 of 4 branches missed.">        if (output == null || output.isBlank()) {</span>
+<span class="fc" id="L54">            return;</span>
+        }
+        try {
+<span class="nc" id="L57">            append(Path.of(output), event);</span>
+<span class="nc" id="L58">        } catch (IOException e) {</span>
+<span class="nc" id="L59">            LOGGER.warn(&quot;qid={} node={} Could not append execution-path evidence to {}&quot;,</span>
+<span class="nc" id="L60">                    qid, LogUtil.node(), output, e);</span>
+<span class="nc" id="L61">        }</span>
+<span class="nc" id="L62">    }</span>
+
+    /**
+     * Serializes one execution-path event as a JSON object.
+     *
+     * @param qid endpoint query identifier
+     * @param query logical SQL query
+     * @param tracker runtime path tracker
+     * @param success whether execution completed successfully
+     * @param failureReason failure description or null
+     * @return serialized event
+     */
+    public static String toJson(String qid, String query, ExecutionPathTracker tracker,
+            boolean success, String failureReason) {
+<span class="fc" id="L76">        ExecutionPath path = tracker.path();</span>
+<span class="fc" id="L77">        ObjectNode event = JSON.createObjectNode();</span>
+<span class="fc" id="L78">        event.put(&quot;schema_version&quot;, &quot;1.0.0&quot;);</span>
+<span class="fc" id="L79">        event.put(&quot;timestamp&quot;, Instant.now().toString());</span>
+<span class="fc" id="L80">        event.put(&quot;qid&quot;, qid);</span>
+<span class="fc" id="L81">        event.put(&quot;node&quot;, LogUtil.node());</span>
+<span class="fc" id="L82">        event.put(&quot;query_digest&quot;, queryDigest(query));</span>
+<span class="fc" id="L83">        event.put(&quot;execution_path&quot;, path.label());</span>
+<span class="fc" id="L84">        event.put(&quot;pushdown_evidence&quot;, path.isPushdownEvidence());</span>
+<span class="fc" id="L85">        event.put(&quot;success&quot;, success);</span>
+<span class="fc" id="L86">        putNullable(event, &quot;fallback_target&quot;,</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">                tracker.fallbackTarget() == null ? null : tracker.fallbackTarget().label());</span>
+<span class="fc" id="L88">        putNullable(event, &quot;reason&quot;, tracker.reason());</span>
+<span class="fc" id="L89">        putNullable(event, &quot;failure_reason&quot;, sanitize(failureReason));</span>
+        try {
+<span class="fc" id="L91">            return JSON.writeValueAsString(event);</span>
+<span class="nc" id="L92">        } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L93">            throw new IllegalStateException(&quot;Could not serialize execution-path event&quot;, e);</span>
+        }
+    }
+
+    /**
+     * Computes the stable digest of a whitespace-normalized SQL query.
+     *
+     * @param query SQL query
+     * @return lowercase SHA-256 digest
+     */
+    public static String queryDigest(String query) {
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        String normalized = query == null ? &quot;&quot; : query.strip()</span>
+<span class="fc" id="L105">                .replaceAll(&quot;\\s+&quot;, &quot; &quot;)</span>
+<span class="fc" id="L106">                .toLowerCase(Locale.ROOT);</span>
+        try {
+<span class="fc" id="L108">            MessageDigest digest = MessageDigest.getInstance(&quot;SHA-256&quot;);</span>
+<span class="fc" id="L109">            return HexFormat.of().formatHex(</span>
+<span class="fc" id="L110">                    digest.digest(normalized.getBytes(StandardCharsets.UTF_8)));</span>
+<span class="nc" id="L111">        } catch (NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L112">            throw new IllegalStateException(&quot;SHA-256 is unavailable&quot;, e);</span>
+        }
+    }
+
+    /**
+     * Writes a nullable string field.
+     *
+     * @param event destination JSON object
+     * @param field field name
+     * @param value field value
+     */
+    private static void putNullable(ObjectNode event, String field, String value) {
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        if (value == null) {</span>
+<span class="fc" id="L125">            event.putNull(field);</span>
+        } else {
+<span class="fc" id="L127">            event.put(field, value);</span>
+        }
+<span class="fc" id="L129">    }</span>
+
+    /**
+     * Removes line breaks and bounds a failure description.
+     *
+     * @param value untrusted failure description
+     * @return sanitized description or null
+     */
+    private static String sanitize(String value) {
+<span class="fc bfc" id="L138" title="All 2 branches covered.">        if (value == null) {</span>
+<span class="fc" id="L139">            return null;</span>
+        }
+<span class="fc" id="L141">        String sanitized = value.replaceAll(&quot;[\\r\\n]+&quot;, &quot; &quot;).strip();</span>
+<span class="pc bpc" id="L142" title="1 of 2 branches missed.">        return sanitized.length() &lt;= 1024 ? sanitized : sanitized.substring(0, 1024);</span>
+    }
+
+    /**
+     * Appends a serialized event atomically within this process.
+     *
+     * @param output JSONL output path
+     * @param event serialized event
+     * @throws IOException if the event cannot be appended
+     */
+    private static void append(Path output, String event) throws IOException {
+<span class="nc" id="L153">        synchronized (FILE_LOCK) {</span>
+<span class="nc" id="L154">            Path parent = output.getParent();</span>
+<span class="nc bnc" id="L155" title="All 2 branches missed.">            if (parent != null) {</span>
+<span class="nc" id="L156">                Files.createDirectories(parent);</span>
+            }
+<span class="nc" id="L158">            Files.writeString(output, event + System.lineSeparator(),</span>
+                    StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND);
+<span class="nc" id="L161">        }</span>
+<span class="nc" id="L162">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

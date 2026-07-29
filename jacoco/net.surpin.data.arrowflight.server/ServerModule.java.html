@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ServerModule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server</a> &gt; <span class="el_source">ServerModule.java</span></div><h1>ServerModule.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server;
+
+import dagger.Module;
+import dagger.Provides;
+import javax.inject.Singleton;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.arrow.flight.Location;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import net.surpin.data.arrowflight.server.LogUtil;
+import net.surpin.data.arrowflight.server.adapters.ConfigAdapter;
+import net.surpin.data.arrowflight.server.adapters.DuckDbAdapter;
+import net.surpin.data.arrowflight.server.adapters.FlightSqlProducer;
+import net.surpin.data.arrowflight.server.adapters.HazelcastAdapter;
+import net.surpin.data.arrowflight.server.adapters.ParquetAdapter;
+import net.surpin.data.arrowflight.server.model.AppConfig;
+import net.surpin.data.arrowflight.server.services.ClusterService;
+import net.surpin.data.arrowflight.server.services.ExecutionService;
+import net.surpin.data.arrowflight.server.services.MetadataService;
+import net.surpin.data.arrowflight.server.services.QueryPlanner;
+
+/**
+ * Dagger module that wires all server components as singletons.
+ * Runtime parameters (hosts, Hadoop config) are passed via constructor.
+ */
+@Module
+public final class ServerModule {
+
+<span class="nc" id="L43">    private static final Logger LOGGER = LoggerFactory.getLogger(ServerModule.class);</span>
+
+    private final String[] hazelcastHosts;
+    private final String serverUri;
+    private final String localStorageHost;
+    private final Configuration hadoopConfig;
+
+    /**
+     * Creates module with runtime parameters.
+     *
+     * @param hazelcastHosts cluster seed hosts
+     * @param serverUri      this server's URI
+     * @param localStorageHost HDFS DataNode host colocated with this server
+     * @param hadoopConfig   Hadoop configuration
+     */
+    public ServerModule(String[] hazelcastHosts, String serverUri,
+<span class="nc" id="L59">            String localStorageHost, Configuration hadoopConfig) {</span>
+<span class="nc" id="L60">        this.hazelcastHosts = hazelcastHosts;</span>
+<span class="nc" id="L61">        this.serverUri = serverUri;</span>
+<span class="nc" id="L62">        this.localStorageHost = localStorageHost;</span>
+<span class="nc" id="L63">        this.hadoopConfig = hadoopConfig;</span>
+<span class="nc" id="L64">    }</span>
+
+    /**
+     * Provide AppConfig singleton
+     * @return application configuration
+     */
+    @Provides
+    @Singleton
+    AppConfig config() {
+<span class="nc" id="L73">        System.setProperty(</span>
+            org.apache.arrow.memory.DefaultAllocationManagerOption.ALLOCATION_MANAGER_TYPE_PROPERTY_NAME,
+<span class="nc" id="L75">            org.apache.arrow.memory.DefaultAllocationManagerOption.AllocationManagerType.Netty.name());</span>
+<span class="nc" id="L76">        return ConfigAdapter.getConfig();</span>
+    }
+
+    /**
+     * Provide HazelcastAdapter singleton
+     * @param config application configuration
+     * @return Hazelcast adapter
+     */
+    @Provides
+    @Singleton
+    HazelcastAdapter hazelcast(AppConfig config) {
+<span class="nc" id="L87">        return new HazelcastAdapter(config, hazelcastHosts);</span>
+    }
+
+    /**
+     * Provide ClusterService singleton
+     * @param hazelcast Hazelcast adapter
+     * @param config application configuration
+     * @return cluster service
+     */
+    @Provides
+    @Singleton
+    ClusterService cluster(HazelcastAdapter hazelcast, AppConfig config) {
+<span class="nc" id="L99">        return new ClusterService(hazelcast, config, serverUri);</span>
+    }
+
+    /**
+     * Provide I/O thread pool singleton
+     * @param config application configuration
+     * @return executor service
+     */
+    @Provides
+    @Singleton
+    ExecutorService ioPool(AppConfig config) {
+<span class="nc" id="L110">        int parallelism = config.ioParallelism();</span>
+<span class="nc" id="L111">        LOGGER.info(&quot;node={} pool=create threads={}&quot;, LogUtil.node(), parallelism);</span>
+<span class="nc" id="L112">        return new java.util.concurrent.AbstractExecutorService() {</span>
+<span class="nc" id="L113">            private final ExecutorService delegate = Executors.newFixedThreadPool(parallelism, r -&gt; {</span>
+<span class="nc" id="L114">                Thread t = new Thread(r, &quot;parquet-io&quot;);</span>
+<span class="nc" id="L115">                t.setDaemon(true);</span>
+<span class="nc" id="L116">                return t;</span>
+            });
+<span class="nc" id="L118">            private final java.util.concurrent.atomic.AtomicInteger activeTasks = new java.util.concurrent.atomic.AtomicInteger(0);</span>
+<span class="nc" id="L119">            private final java.util.concurrent.atomic.AtomicLong submittedTasks = new java.util.concurrent.atomic.AtomicLong(0);</span>
+
+            @Override
+            public void execute(Runnable command) {
+<span class="nc" id="L123">                long submitTime = System.nanoTime();</span>
+<span class="nc" id="L124">                long taskId = submittedTasks.incrementAndGet();</span>
+<span class="nc" id="L125">                int active = activeTasks.incrementAndGet();</span>
+<span class="nc bnc" id="L126" title="All 2 branches missed.">                if (active &gt; parallelism) {</span>
+<span class="nc" id="L127">                    LOGGER.warn(&quot;node={} pool=queueGrowth active={} max={} queued={}&quot;,</span>
+<span class="nc" id="L128">                            LogUtil.node(), active, parallelism, active - parallelism);</span>
+                }
+<span class="nc" id="L130">                delegate.execute(() -&gt; {</span>
+<span class="nc" id="L131">                    long queueDelay = System.nanoTime() - submitTime;</span>
+<span class="nc bnc" id="L132" title="All 2 branches missed.">                    if (queueDelay &gt; 1_000_000_000L) {</span>
+<span class="nc" id="L133">                        LOGGER.warn(&quot;qid={} node={} pool=starvation taskId={} queueDelay={} active={}&quot;,</span>
+<span class="nc" id="L134">                                LogUtil.qid(), LogUtil.node(), taskId,</span>
+<span class="nc" id="L135">                                LogUtil.elapsedNanos(submitTime), activeTasks.get());</span>
+                    }
+                    try {
+<span class="nc" id="L138">                        command.run();</span>
+                    } finally {
+<span class="nc" id="L140">                        activeTasks.decrementAndGet();</span>
+                    }
+<span class="nc" id="L142">                });</span>
+<span class="nc" id="L143">            }</span>
+
+            @Override
+            public void shutdown() {
+<span class="nc" id="L147">                delegate.shutdown();</span>
+<span class="nc" id="L148">            }</span>
+            @Override
+            public List&lt;Runnable&gt; shutdownNow() {
+<span class="nc" id="L151">                return delegate.shutdownNow();</span>
+            }
+            @Override
+            public boolean isShutdown() {
+<span class="nc" id="L155">                return delegate.isShutdown();</span>
+            }
+            @Override
+            public boolean isTerminated() {
+<span class="nc" id="L159">                return delegate.isTerminated();</span>
+            }
+            @Override
+            public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+<span class="nc" id="L163">                return delegate.awaitTermination(timeout, unit);</span>
+            }
+        };
+    }
+
+    /**
+     * Provide Hadoop FileSystem singleton
+     * @param config application configuration
+     * @return Hadoop file system
+     */
+    @Provides
+    @Singleton
+    FileSystem fileSystem(AppConfig config) {
+<span class="nc" id="L176">        hadoopConfig.setInt(&quot;io.file.buffer.size&quot;, config.ioFileBufferSize());</span>
+<span class="nc" id="L177">        hadoopConfig.setBoolean(&quot;dfs.client.read.shortcircuit&quot;, true);</span>
+<span class="nc" id="L178">        hadoopConfig.setBoolean(&quot;dfs.client.read.shortcircuit.skip.checksum&quot;, false);</span>
+<span class="nc" id="L179">        hadoopConfig.setBoolean(&quot;fs.file.impl.disable.cache&quot;, true);</span>
+        try {
+<span class="nc" id="L181">            return new Path(config.dataDir()).getFileSystem(hadoopConfig);</span>
+<span class="nc" id="L182">        } catch (IOException e) {</span>
+<span class="nc" id="L183">            throw new UncheckedIOException(e);</span>
+        }
+    }
+
+    /**
+     * Provide ParquetAdapter singleton
+     * @param config application configuration
+     * @param fs Hadoop file system
+     * @return parquet adapter
+     */
+    @Provides
+    @Singleton
+    ParquetAdapter parquetAdapter(AppConfig config, FileSystem fs) {
+<span class="nc" id="L196">        return new ParquetAdapter(config, fs, localStorageHost);</span>
+    }
+
+    /**
+     * Provide DuckDbAdapter singleton
+     * @param config application configuration
+     * @param ioPool I/O thread pool
+     * @return DuckDB adapter
+     */
+    @Provides
+    @Singleton
+    DuckDbAdapter duckDb(AppConfig config, ExecutorService ioPool) {
+<span class="nc" id="L208">        return new DuckDbAdapter(config, ioPool);</span>
+    }
+
+    /**
+     * Provide MetadataService singleton
+     * @param parquetAdapter parquet adapter
+     * @return metadata service
+     */
+    @Provides
+    @Singleton
+    MetadataService metadata(ParquetAdapter parquetAdapter) {
+<span class="nc" id="L219">        return new MetadataService(parquetAdapter);</span>
+    }
+
+    /**
+     * Provide QueryPlanner singleton
+     * @param parquetAdapter parquet adapter
+     * @param clusterService cluster service
+     * @return query planner
+     */
+    @Provides
+    @Singleton
+    QueryPlanner queryPlanner(ParquetAdapter parquetAdapter, ClusterService clusterService) {
+<span class="nc" id="L231">        return new QueryPlanner(parquetAdapter, clusterService);</span>
+    }
+
+    /**
+     * Provide BufferAllocator singleton
+     * @return buffer allocator
+     */
+    @Provides
+    @Singleton
+    BufferAllocator allocator() {
+<span class="nc" id="L241">        return new RootAllocator(Long.MAX_VALUE);</span>
+    }
+
+    /**
+     * Provide FlightSqlProducer singleton
+     * @param config application configuration
+     * @param allocator buffer allocator
+     * @param metadataService metadata service
+     * @param queryPlanner query planner
+     * @param executionService execution service
+     * @param clusterService cluster service
+     * @return Flight SQL producer
+     */
+    @Provides
+    @Singleton
+    FlightSqlProducer producer(AppConfig config, BufferAllocator allocator,
+            MetadataService metadataService, QueryPlanner queryPlanner,
+            ExecutionService executionService, ClusterService clusterService) {
+<span class="nc" id="L259">        int port = config.port();</span>
+<span class="nc" id="L260">        String localhost = &quot;0.0.0.0&quot;;</span>
+<span class="nc" id="L261">        Location location = Location.forGrpcInsecure(localhost, port);</span>
+<span class="nc" id="L262">        return new FlightSqlProducer(location, allocator, metadataService,</span>
+                queryPlanner, executionService, clusterService);
+    }
+
+    /**
+     * Provide ExecutionService singleton
+     * @param parquetAdapter parquet adapter
+     * @param duckDbAdapter DuckDB adapter
+     * @param metadataService metadata service
+     * @param appConfig application configuration
+     * @param ioPool I/O thread pool
+     * @return execution service
+     */
+    @Provides
+    @Singleton
+    ExecutionService execution(ParquetAdapter parquetAdapter, DuckDbAdapter duckDbAdapter,
+            MetadataService metadataService,
+            AppConfig appConfig, ExecutorService ioPool) {
+<span class="nc" id="L280">        return new ExecutionService(parquetAdapter, duckDbAdapter,</span>
+                metadataService, appConfig, ioPool);
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

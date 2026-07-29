@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TypeConversionHelper.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.model</a> &gt; <span class="el_source">TypeConversionHelper.java</span></div><h1>TypeConversionHelper.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.model;
+
+import com.google.common.collect.Streams;
+import org.apache.arrow.vector.*;
+import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.complex.MapVector;
+import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.util.JsonStringHashMap;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.catalyst.util.ArrayBasedMapData;
+import org.apache.spark.sql.catalyst.util.ArrayData;
+import org.apache.spark.sql.catalyst.util.DateTimeUtils;
+import org.apache.spark.sql.catalyst.util.IntervalUtils;
+import org.apache.spark.sql.types.Decimal;
+import org.apache.spark.unsafe.types.UTF8String;
+import scala.collection.JavaConverters;
+
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+/**
+ * Converts values between Arrow, Spark, and Java representations.
+ */
+public class TypeConversionHelper {
+    private static final String KEY_FIELD_NAME = &quot;key&quot;;
+    private static final String VALUE_FIELD_NAME = &quot;value&quot;;
+
+    /**
+     * Prevents utility class instantiation.
+     */
+    private TypeConversionHelper() {
+    }
+
+<span class="fc" id="L41">    static final Function&lt;Long, Long&gt; microsToNanos = (micros) -&gt; TypeConversionHelper.microsToMillis.apply(micros) * 1000L;</span>
+<span class="fc" id="L42">    static final Function&lt;Long, Long&gt; microsToMillis = DateTimeUtils::microsToMillis;</span>
+<span class="fc" id="L43">    static final Function&lt;Long, Long&gt; microsToSecs = (micros) -&gt; TypeConversionHelper.microsToMillis.apply(micros) / 1000L;</span>
+
+<span class="pc" id="L45">    public static final BiFunction&lt;Integer, ZoneId, Long&gt; daysToMicros = (days, zone) -&gt; DateTimeUtils.daysToMicros(days, ZoneId.systemDefault());</span>
+<span class="fc" id="L46">    public static final Function&lt;Long, Long&gt; microsToEpochNanos = (micros) -&gt; {</span>
+<span class="nc" id="L47">        Instant t = DateTimeUtils.microsToLocalDateTime(micros).withYear(1970)</span>
+<span class="nc" id="L48">                .withMonth(Month.JANUARY.getValue()).withDayOfMonth(1)</span>
+<span class="nc" id="L49">                .atZone(ZoneId.systemDefault()).toInstant();</span>
+<span class="nc" id="L50">        return t.toEpochMilli() * 1000000L + t.getNano();</span>
+    };
+<span class="fc" id="L52">    static final Function&lt;String, Long&gt; timestrToNanos = (ts) -&gt; {</span>
+<span class="nc" id="L53">        Instant t = LocalDateTime.of(LocalDate.of(1970, Month.JANUARY, 1),</span>
+<span class="nc" id="L54">                LocalTime.parse(ts)).atZone(ZoneId.systemDefault()).toInstant();</span>
+<span class="nc" id="L55">        return t.toEpochMilli() * 1000000L + t.getNano();</span>
+    };
+<span class="fc bfc" id="L57" title="All 2 branches covered.">    static final BiFunction&lt;Object, Object, Object&gt; o1ElseO2 = (o1, o2) -&gt; (o1 != null) ? o1 : o2;</span>
+
+    //base converters
+<span class="fc" id="L60">    static final Function&lt;BigDecimal, Decimal&gt; bigDecimalToDecimal = Decimal::apply;</span>
+<span class="fc" id="L61">    static final Function&lt;String, UTF8String&gt; stringToUtf8String = UTF8String::fromString;</span>
+<span class="pc" id="L62">    static final Function&lt;Integer, Integer&gt; dateDayToInt = (dd) -&gt; DateTimeUtils.fromJavaDate(java.sql.Date.valueOf(LocalDate.ofEpochDay(dd)));</span>
+<span class="pc" id="L63">    public static final Function&lt;LocalDateTime, Integer&gt; localDateTimeToInt = (ldt) -&gt; DateTimeUtils.fromJavaDate(java.sql.Date.valueOf(ldt.toLocalDate()));</span>
+<span class="pc" id="L64">    public static final Function&lt;LocalDateTime, Long&gt; localDateTimeToLong = (ldt) -&gt; DateTimeUtils.fromJavaTimestamp(Timestamp.valueOf(ldt));</span>
+<span class="pc" id="L65">    public static final BiFunction&lt;Long, String, Long&gt; timestampSecTZToLong = (ss, zone) -&gt; DateTimeUtils.fromJavaTimestamp(Timestamp.valueOf(LocalDateTime.from(Instant.ofEpochSecond(ss).atZone(ZoneId.of(zone)))));</span>
+<span class="pc" id="L66">    public static final BiFunction&lt;Long, String, Long&gt; timestampMilliTZToLong = (mss, zone) -&gt; DateTimeUtils.fromJavaTimestamp(Timestamp.valueOf(LocalDateTime.from(Instant.ofEpochMilli(mss).atZone(ZoneId.of(zone)))));</span>
+<span class="pc" id="L67">    public static final BiFunction&lt;Long, String, Long&gt; timestampNanoTZToLong = (ns, zone) -&gt; DateTimeUtils.fromJavaTimestamp(Timestamp.valueOf(LocalDateTime.from(Instant.ofEpochMilli(ns / 1000000L).atZone(ZoneId.of(zone)))));</span>
+<span class="pc" id="L68">    public static final BiFunction&lt;Long, String, Long&gt; timestampMicroTZToLong = (ms, zone) -&gt; DateTimeUtils.fromJavaTimestamp(Timestamp.valueOf(LocalDateTime.from(Instant.ofEpochMilli(ms / 1000L).atZone(ZoneId.of(zone))).plusNanos(ms % 1_000 * 1000L)));</span>
+<span class="fc" id="L69">    public static final Function&lt;Timestamp, Long&gt; timestampToLong = DateTimeUtils::fromJavaTimestamp;</span>
+<span class="fc" id="L70">    static final Function&lt;Integer, UTF8String&gt; timeSecToString = (ts) -&gt; {</span>
+<span class="fc" id="L71">        int hours = ts / 3600;</span>
+<span class="fc" id="L72">        int minutes = (ts - hours * 3600) / 60;</span>
+<span class="fc" id="L73">        int seconds = (ts - hours * 3600 - minutes * 60);</span>
+<span class="fc" id="L74">        return TypeConversionHelper.stringToUtf8String.apply(String.format(&quot;%02d:%02d:%02d&quot;, hours, minutes, seconds));</span>
+    };
+<span class="pc" id="L76">    static final Function&lt;LocalDateTime, UTF8String&gt; timeMilliToString = (ldt) -&gt; TypeConversionHelper.stringToUtf8String.apply(String.format(&quot;%02d:%02d:%02d.%03d&quot;, ldt.getHour(), ldt.getMinute(), ldt.getSecond(), ldt.getNano() / 1000000L));</span>
+<span class="fc" id="L77">    static final Function&lt;Long, UTF8String&gt; timeMicroToString = (ms) -&gt; {</span>
+<span class="fc" id="L78">        int totalSeconds = (int) (ms / 1000000L);</span>
+<span class="fc" id="L79">        long microSeconds = ms - totalSeconds * 1000000L;</span>
+<span class="fc" id="L80">        int hours = totalSeconds / 3600;</span>
+<span class="fc" id="L81">        int minutes = (totalSeconds - hours * 3600) / 60;</span>
+<span class="fc" id="L82">        int seconds = (totalSeconds - hours * 3600 - minutes * 60);</span>
+<span class="fc" id="L83">        return TypeConversionHelper.stringToUtf8String.apply(String.format(&quot;%02d:%02d:%02d.%06d&quot;, hours, minutes, seconds, microSeconds));</span>
+    };
+<span class="fc" id="L85">    static final Function&lt;Long, UTF8String&gt; timeNanoToString = (ns) -&gt; {</span>
+<span class="fc" id="L86">        int totalSeconds = (int) (ns / 1000000000L);</span>
+<span class="fc" id="L87">        long nanoSeconds = totalSeconds * 1000000000L;</span>
+<span class="fc" id="L88">        int hours = totalSeconds / 3600;</span>
+<span class="fc" id="L89">        int minutes = (totalSeconds - hours * 3600) / 60;</span>
+<span class="fc" id="L90">        int seconds = (totalSeconds - hours * 3600 - minutes * 60);</span>
+<span class="fc" id="L91">        return TypeConversionHelper.stringToUtf8String.apply(String.format(&quot;%02d:%02d:%02d.%09d&quot;, hours, minutes, seconds, nanoSeconds));</span>
+    };
+<span class="fc" id="L93">    public static final Function&lt;Duration, Long&gt; durationToLong = IntervalUtils::durationToMicros;</span>
+<span class="fc" id="L94">    public static final Function&lt;Period, Integer&gt; periodToInt = IntervalUtils::periodToMonths;</span>
+<span class="fc" id="L95">    public static final Function&lt;PeriodDuration, InternalRow&gt; translatePeriodDuration =</span>
+<span class="nc" id="L96">            (pd) -&gt; InternalRow.fromSeq(JavaConverters.asScalaBuffer(List.&lt;Object&gt;of(</span>
+<span class="nc" id="L97">                    TypeConversionHelper.periodToInt.apply(pd.getPeriod()),</span>
+<span class="nc" id="L98">                    TypeConversionHelper.durationToLong.apply(pd.getDuration()))));</span>
+
+    @SuppressWarnings(&quot;UstableApiUsage&quot;)
+<span class="fc" id="L101">    static final ArrowConversion.ConvertFrom&lt;Map&lt;String, ?&gt;, StructVector, FieldType.StructType, InternalRow&gt; translateStruct = (m, sv, t) -&gt; {</span>
+<span class="nc" id="L102">        Map&lt;String, FieldType&gt; mt = t.getChildrenType();</span>
+<span class="nc" id="L103">        BiFunction&lt;Map.Entry&lt;String, ?&gt;, Long, Object&gt; setV = (e, i) -&gt; {</span>
+<span class="nc" id="L104">            String k = e.getKey();</span>
+<span class="nc" id="L105">            Object v = e.getValue();</span>
+<span class="nc bnc" id="L106" title="All 4 branches missed.">            return (v != null &amp;&amp; mt.containsKey(k)) ? TypeConversionHelper.translate.apply(mt.get(k), v, sv.getVectorById(i.intValue())) : null;</span>
+        };
+<span class="nc" id="L108">        List&lt;Object&gt; nm = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc" id="L109">        Streams.mapWithIndex(m.entrySet().stream(), setV::apply).forEach(nm::add);</span>
+<span class="nc" id="L110">        return InternalRow.fromSeq(JavaConverters.asScalaBuffer(Arrays.asList(nm.toArray())).toSeq());</span>
+    };
+<span class="fc" id="L112">    static final ArrowConversion.ConvertFrom&lt;Map&lt;String, ?&gt;, StructVector, FieldType.StructType, ArrayBasedMapData&gt; structToMap = (m, sv, t) -&gt; {</span>
+<span class="nc" id="L113">        Map&lt;String, FieldType&gt; mt = t.getChildrenType();</span>
+<span class="nc bnc" id="L114" title="All 8 branches missed.">        if (mt.size() == 1 &amp;&amp; mt.containsKey(&quot;map&quot;) &amp;&amp; mt.get(&quot;map&quot;).getTypeID() == FieldType.IDs.LIST &amp;&amp; sv.getVectorById(0) instanceof ListVector lv) {</span>
+<span class="nc" id="L115">            FieldType.ListType lt = (FieldType.ListType) mt.get(&quot;map&quot;);</span>
+<span class="nc bnc" id="L116" title="All 4 branches missed.">            if (lt.getChildType().getTypeID() == FieldType.IDs.STRUCT &amp;&amp; lv.getDataVector() instanceof StructVector dv) {</span>
+<span class="nc" id="L117">                FieldType.StructType st = (FieldType.StructType) lt.getChildType();</span>
+<span class="nc" id="L118">                String[] childKeys = st.getChildrenType().keySet().toArray(new String[0]);</span>
+<span class="nc bnc" id="L119" title="All 4 branches missed.">                if (childKeys.length == 2 &amp;&amp; childKeys[0].equals(KEY_FIELD_NAME)</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">                        &amp;&amp; childKeys[1].equals(VALUE_FIELD_NAME)) {</span>
+<span class="nc" id="L121">                    List&lt;Map.Entry&lt;String, ?&gt;&gt; kvs = new java.util.ArrayList&lt;&gt;(m.entrySet());</span>
+<span class="nc bnc" id="L122" title="All 6 branches missed.">                    if (kvs.size() == 1 &amp;&amp; kvs.getFirst().getKey().equals(&quot;map&quot;) &amp;&amp; kvs.getFirst().getValue() instanceof List&lt;?&gt; list) {</span>
+<span class="nc" id="L123">                        FieldType kt = st.getChildrenType().get(KEY_FIELD_NAME);</span>
+<span class="nc" id="L124">                        FieldType vt = st.getChildrenType().get(VALUE_FIELD_NAME);</span>
+<span class="nc" id="L125">                        List&lt;Object&gt; keys = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc" id="L126">                        List&lt;Object&gt; values = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc" id="L127">                        list.forEach(e -&gt; {</span>
+<span class="nc" id="L128">                            Map&lt;?, ?&gt; mes = (Map&lt;?, ?&gt;) e;</span>
+<span class="nc" id="L129">                            mes.forEach((key, value) -&gt; {</span>
+<span class="nc" id="L130">                                keys.add(TypeConversionHelper.translate.apply(kt, key, dv.getVectorById(0)));</span>
+<span class="nc" id="L131">                                values.add(TypeConversionHelper.translate.apply(vt, value, dv.getVectorById(1)));</span>
+<span class="nc" id="L132">                            });</span>
+<span class="nc" id="L133">                        });</span>
+<span class="nc" id="L134">                        return new ArrayBasedMapData(ArrayData.toArrayData(keys.toArray()), ArrayData.toArrayData(values.toArray()));</span>
+                    }
+                }
+            }
+        }
+<span class="nc" id="L139">        return null;</span>
+    };
+
+    /**
+     * Casts a FieldVector to a specific vector subtype.
+     * @param fv the field vector to cast
+     * @param &lt;V&gt; target vector type
+     * @return cast vector
+     * @throws RuntimeException if cast fails
+     */
+    @SuppressWarnings(&quot;unchecked&quot;)
+    static &lt;V extends org.apache.arrow.vector.FieldVector&gt; V cast(org.apache.arrow.vector.FieldVector fv) {
+        try {
+<span class="nc" id="L152">            return (V) fv;</span>
+<span class="nc" id="L153">        } catch (Exception e) {</span>
+<span class="nc" id="L154">            throw new RuntimeException(String.format(&quot;ArrowVector casting to [%s] failed.&quot;, fv.getClass().getTypeName()), e);</span>
+        }
+    }
+
+
+    @SuppressWarnings(&quot;unchecked&quot;)
+<span class="pc bnc" id="L160" title="All 13 branches missed.">    static final ArrowConversion.ConvertFrom&lt;FieldType, Object, ValueVector, Object&gt; translate = (t, o, v) -&gt; switch (t.getTypeID()) {</span>
+<span class="nc" id="L161">        case VARCHAR, CHAR -&gt; TypeConversionHelper.stringToUtf8String.apply(o.toString());</span>
+<span class="nc" id="L162">        case TIMESTAMP -&gt; translateTimestamp(o, v);</span>
+<span class="nc" id="L163">        case TIME -&gt; translateTime(o, v);</span>
+<span class="nc" id="L164">        case DATE -&gt; translateDate(o, v);</span>
+<span class="nc" id="L165">        case DECIMAL -&gt; TypeConversionHelper.bigDecimalToDecimal.apply((BigDecimal) o);</span>
+        case DURATION_DAY_TIME -&gt;
+<span class="nc bnc" id="L167" title="All 4 branches missed.">            (v instanceof IntervalDayVector || v instanceof DurationVector) ? TypeConversionHelper.durationToLong.apply((Duration) o) : o;</span>
+        case PERIOD_YEAR_MONTH -&gt;
+<span class="nc bnc" id="L169" title="All 2 branches missed.">            (v instanceof IntervalYearVector) ? TypeConversionHelper.periodToInt.apply((Period) o) : o;</span>
+        case PERIOD_DURATION_MONTH_DAY_TIME -&gt;
+<span class="nc bnc" id="L171" title="All 2 branches missed.">            (v instanceof IntervalMonthDayNanoVector) ? TypeConversionHelper.translatePeriodDuration.apply((PeriodDuration) o) : o;</span>
+        case LIST -&gt;
+<span class="nc bnc" id="L173" title="All 2 branches missed.">            (v instanceof ListVector) ? TypeConversionHelper.translateList.apply((List&lt;?&gt;) o, (ListVector) v, (FieldType.ListType) t) : o;</span>
+        case MAP -&gt;
+<span class="nc bnc" id="L175" title="All 2 branches missed.">            (v instanceof MapVector) ? TypeConversionHelper.translateMap.apply((List&lt;?&gt;) o, (MapVector) v, (FieldType.MapType) t) : o;</span>
+        case STRUCT -&gt;
+<span class="nc bnc" id="L177" title="All 2 branches missed.">            (v instanceof StructVector) ? TypeConversionHelper.mapElseStruct.apply((Map&lt;String, ?&gt;) o, (StructVector) v, (FieldType.StructType) t) : o;</span>
+<span class="nc" id="L178">        case NULL -&gt; null;</span>
+<span class="nc" id="L179">        default -&gt; o;</span>
+    };
+
+    /**
+     * Converts a timestamp according to its Arrow vector type.
+     *
+     * @param value timestamp value
+     * @param vector destination vector
+     * @return converted timestamp value
+     */
+    private static Object translateTimestamp(Object value, ValueVector vector) {
+<span class="nc bnc" id="L190" title="All 2 branches missed.">        if (vector instanceof TimeStampMilliVector) {</span>
+<span class="nc" id="L191">            return timestampToLong.apply((Timestamp) value);</span>
+        }
+<span class="nc bnc" id="L193" title="All 2 branches missed.">        if (vector instanceof TimeStampMicroTZVector timestampVector) {</span>
+<span class="nc" id="L194">            return timestampMicroTZToLong.apply((Long) value, timestampVector.getTimeZone());</span>
+        }
+<span class="nc bnc" id="L196" title="All 2 branches missed.">        if (vector instanceof TimeStampSecTZVector timestampVector) {</span>
+<span class="nc" id="L197">            return timestampSecTZToLong.apply((Long) value, timestampVector.getTimeZone());</span>
+        }
+<span class="nc bnc" id="L199" title="All 2 branches missed.">        if (vector instanceof TimeStampMilliTZVector timestampVector) {</span>
+<span class="nc" id="L200">            return timestampMilliTZToLong.apply((Long) value, timestampVector.getTimeZone());</span>
+        }
+<span class="nc bnc" id="L202" title="All 2 branches missed.">        if (vector instanceof TimeStampNanoTZVector timestampVector) {</span>
+<span class="nc" id="L203">            return timestampNanoTZToLong.apply((Long) value, timestampVector.getTimeZone());</span>
+        }
+<span class="nc bnc" id="L205" title="All 6 branches missed.">        if (vector instanceof TimeStampMicroVector</span>
+                || vector instanceof TimeStampSecVector
+                || vector instanceof TimeStampNanoVector) {
+<span class="nc" id="L208">            return localDateTimeToLong.apply((LocalDateTime) value);</span>
+        }
+<span class="nc" id="L210">        return value;</span>
+    }
+
+    /**
+     * Converts a time according to its Arrow vector type.
+     *
+     * @param value time value
+     * @param vector destination vector
+     * @return converted time value
+     */
+    private static Object translateTime(Object value, ValueVector vector) {
+<span class="nc bnc" id="L221" title="All 2 branches missed.">        if (vector instanceof TimeSecVector) {</span>
+<span class="nc" id="L222">            return timeSecToString.apply((Integer) value);</span>
+        }
+<span class="nc bnc" id="L224" title="All 2 branches missed.">        if (vector instanceof TimeMilliVector) {</span>
+<span class="nc" id="L225">            return timeMilliToString.apply((LocalDateTime) value);</span>
+        }
+<span class="nc bnc" id="L227" title="All 2 branches missed.">        if (vector instanceof TimeMicroVector) {</span>
+<span class="nc" id="L228">            return timeMicroToString.apply((Long) value);</span>
+        }
+<span class="nc bnc" id="L230" title="All 2 branches missed.">        if (vector instanceof TimeNanoVector) {</span>
+<span class="nc" id="L231">            return timeNanoToString.apply((Long) value);</span>
+        }
+<span class="nc" id="L233">        return value;</span>
+    }
+
+    /**
+     * Converts a date according to its Arrow vector type.
+     *
+     * @param value date value
+     * @param vector destination vector
+     * @return converted date value
+     */
+    private static Object translateDate(Object value, ValueVector vector) {
+<span class="nc bnc" id="L244" title="All 2 branches missed.">        if (vector instanceof DateDayVector) {</span>
+<span class="nc" id="L245">            return dateDayToInt.apply((Integer) value);</span>
+        }
+<span class="nc bnc" id="L247" title="All 2 branches missed.">        if (vector instanceof DateMilliVector) {</span>
+<span class="nc" id="L248">            return localDateTimeToInt.apply((LocalDateTime) value);</span>
+        }
+<span class="nc" id="L250">        return value;</span>
+    }
+
+
+<span class="pc" id="L254">    static final ArrowConversion.ConvertFrom&lt;Map&lt;String, ?&gt;, StructVector, FieldType.StructType, Object&gt; mapElseStruct = (m, sv, t) -&gt; TypeConversionHelper.o1ElseO2.apply(TypeConversionHelper.structToMap.apply(m, sv, t), TypeConversionHelper.translateStruct.apply(m, sv, t));</span>
+<span class="fc" id="L255">    static final ArrowConversion.ConvertFrom&lt;List&lt;?&gt;, MapVector, FieldType.MapType, ArrayBasedMapData&gt; translateMap = (l, mv, mt) -&gt; {</span>
+<span class="nc" id="L256">        List&lt;Object&gt; keys = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc" id="L257">        List&lt;Object&gt; values = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc bnc" id="L258" title="All 2 branches missed.">        Function&lt;ValueVector[], Boolean&gt; probe = (vs) -&gt; (vs.length == 2</span>
+<span class="nc bnc" id="L259" title="All 2 branches missed.">                &amp;&amp; vs[0].getField().getName().equalsIgnoreCase(KEY_FIELD_NAME)</span>
+<span class="nc bnc" id="L260" title="All 2 branches missed.">                &amp;&amp; vs[1].getField().getName().equalsIgnoreCase(VALUE_FIELD_NAME));</span>
+<span class="nc" id="L261">        Consumer&lt;ValueVector[]&gt; populate = (vs) -&gt; {</span>
+<span class="nc bnc" id="L262" title="All 2 branches missed.">            if (probe.apply(vs)) {</span>
+<span class="nc" id="L263">                l.forEach(e -&gt; {</span>
+<span class="nc" id="L264">                    JsonStringHashMap&lt;?, ?&gt; entry = (JsonStringHashMap&lt;?, ?&gt;) e;</span>
+<span class="nc" id="L265">                    keys.add(translate.apply(mt.getKeyType(), entry.get(KEY_FIELD_NAME), vs[0]));</span>
+<span class="nc" id="L266">                    values.add(translate.apply(mt.getValueType(), entry.get(VALUE_FIELD_NAME), vs[1]));</span>
+<span class="nc" id="L267">                });</span>
+            }
+<span class="nc" id="L269">        };</span>
+<span class="nc" id="L270">        ValueVector[] fields = mv.getChildrenFromFields().toArray(new ValueVector[0]);</span>
+<span class="nc bnc" id="L271" title="All 4 branches missed.">        populate.accept((fields.length == 1 &amp;&amp; fields[0] instanceof StructVector) ? ((StructVector) fields[0]).getChildrenFromFields().toArray(new ValueVector[0]) : fields);</span>
+<span class="nc" id="L272">        return new ArrayBasedMapData(ArrayData.toArrayData(keys.toArray()), ArrayData.toArrayData(values.toArray()));</span>
+    };
+<span class="pc" id="L274">    static final ArrowConversion.ConvertFrom&lt;List&lt;?&gt;, ListVector, FieldType.ListType, ArrayData&gt; translateList = (l, v, t) -&gt; ArrayData.toArrayData(l.stream().map(e -&gt; TypeConversionHelper.translate.apply(t.getChildType(), e, v.getDataVector())).toArray());</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

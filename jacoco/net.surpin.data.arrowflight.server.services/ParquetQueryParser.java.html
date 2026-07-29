@@ -1,0 +1,580 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ParquetQueryParser.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.services</a> &gt; <span class="el_source">ParquetQueryParser.java</span></div><h1>ParquetQueryParser.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.services;
+
+import org.jooq.*;
+import org.jooq.conf.ParseNameCase;
+import org.jooq.conf.RenderQuotedNames;
+import org.jooq.conf.Settings;
+import org.jooq.impl.DSL;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Parses SQL SELECT queries against Parquet tables, extracting schema, table, columns, filters, and join info.
+ */
+public class ParquetQueryParser {
+
+<span class="fc" id="L26">    private static final Logger LOGGER = LoggerFactory.getLogger(ParquetQueryParser.class);</span>
+    private static final int PARSE_CACHE_CAPACITY = 1024;
+<span class="fc" id="L28">    private static final Map&lt;String, ParquetQueryParser&gt; PARSE_CACHE =</span>
+<span class="fc" id="L29">            Collections.synchronizedMap(</span>
+                    new LinkedHashMap&lt;&gt;(PARSE_CACHE_CAPACITY, 0.75f, true));
+
+    /**
+     * A table reference in a JOIN, with optional schema and alias.
+     */
+<span class="fc" id="L35">    public record JoinTable(String schema, String table, String alias) {}</span>
+
+    /**
+     * A selected expression in a query, describing its aggregation function and column references.
+     */
+    public static final class SelectExpr {
+        /**
+         * Supported aggregation function types.
+         */
+<span class="fc" id="L44">        public enum AggFunc { COLUMN, COUNT_STAR, COUNT, SUM, MIN, MAX }</span>
+
+        public final AggFunc func;
+        public final String inputColumn;
+        public final String inputExpression;
+        public final List&lt;String&gt; inputColumns;
+        public final Integer decimalScale;
+        public final String outputName;
+
+        /**
+         * @param func aggregation function type
+         * @param inputColumn raw column expression text
+         * @param outputName rendered column alias
+         */
+        SelectExpr(AggFunc func, String inputColumn, String outputName) {
+<span class="fc" id="L59">            this(func, inputColumn, inputColumn,</span>
+<span class="fc bfc" id="L60" title="All 2 branches covered.">                    inputColumn == null ? Collections.emptyList() : List.of(inputColumn),</span>
+                    null, outputName);
+<span class="fc" id="L62">        }</span>
+
+        /**
+         * Creates a parsed select expression with its executable SQL and physical inputs.
+         *
+         * @param func aggregation function type
+         * @param inputColumn unquoted input text used by simple-column paths
+         * @param inputExpression quoted SQL expression used by DuckDB
+         * @param inputColumns physical columns referenced by the expression
+         * @param decimalScale decimal input scale, or null for non-decimal inputs
+         * @param outputName rendered column alias
+         */
+        SelectExpr(AggFunc func, String inputColumn, String inputExpression,
+<span class="fc" id="L75">                List&lt;String&gt; inputColumns, Integer decimalScale, String outputName) {</span>
+<span class="fc" id="L76">            this.func = func;</span>
+<span class="fc" id="L77">            this.inputColumn = inputColumn;</span>
+<span class="fc" id="L78">            this.inputExpression = inputExpression;</span>
+<span class="fc" id="L79">            this.inputColumns = List.copyOf(inputColumns);</span>
+<span class="fc" id="L80">            this.decimalScale = decimalScale;</span>
+<span class="fc" id="L81">            this.outputName = outputName;</span>
+<span class="fc" id="L82">        }</span>
+    }
+
+    public final String schema;
+    public final String table;
+    public final List&lt;String&gt; columns;
+    public final String filter;
+
+    public final boolean hasAggregation;
+    public final List&lt;String&gt; groupByColumnNames;
+    public final List&lt;SelectExpr&gt; selectExprs;
+
+    public final boolean isJoin;
+    public final List&lt;JoinTable&gt; joinTables;
+    public final String duckDbSql;
+
+    /**
+     * @param schema table schema name
+     * @param table table name
+     * @param columns selected column names
+     * @param filter WHERE clause expression
+     * @param hasAggregation whether query uses aggregation
+     * @param groupByColumnNames GROUP BY column names
+     * @param selectExprs parsed select expressions
+     */
+    private ParquetQueryParser(String schema, String table, List&lt;String&gt; columns, String filter,
+            boolean hasAggregation, List&lt;String&gt; groupByColumnNames, List&lt;SelectExpr&gt; selectExprs) {
+<span class="fc" id="L109">        this(schema, table, columns, filter, hasAggregation, groupByColumnNames, selectExprs,</span>
+<span class="fc" id="L110">                false, Collections.emptyList(), null);</span>
+<span class="fc" id="L111">    }</span>
+
+    /**
+     * @param schema table schema name
+     * @param table primary table name
+     * @param columns selected column names
+     * @param filter WHERE clause expression
+     * @param hasAggregation whether query uses aggregation
+     * @param groupByColumnNames GROUP BY column names
+     * @param selectExprs parsed select expressions
+     * @param isJoin whether query involves JOINs
+     * @param joinTables list of joined tables
+     * @param duckDbSql rewritten SQL for DuckDB execution
+     */
+    private ParquetQueryParser(String schema, String table, List&lt;String&gt; columns, String filter,
+            boolean hasAggregation, List&lt;String&gt; groupByColumnNames, List&lt;SelectExpr&gt; selectExprs,
+<span class="fc" id="L127">            boolean isJoin, List&lt;JoinTable&gt; joinTables, String duckDbSql) {</span>
+<span class="fc" id="L128">        this.schema = schema;</span>
+<span class="fc" id="L129">        this.table = table;</span>
+<span class="fc" id="L130">        this.columns = List.copyOf(columns);</span>
+<span class="fc" id="L131">        this.filter = filter;</span>
+<span class="fc" id="L132">        this.hasAggregation = hasAggregation;</span>
+<span class="fc" id="L133">        this.groupByColumnNames = List.copyOf(groupByColumnNames);</span>
+<span class="fc" id="L134">        this.selectExprs = List.copyOf(selectExprs);</span>
+<span class="fc" id="L135">        this.isJoin = isJoin;</span>
+<span class="fc" id="L136">        this.joinTables = List.copyOf(joinTables);</span>
+<span class="fc" id="L137">        this.duckDbSql = duckDbSql;</span>
+<span class="fc" id="L138">    }</span>
+
+    /**
+     * @param query SQL SELECT query string
+     * @return parsed query representation
+     * @throws IllegalArgumentException if query is not a SELECT
+     * @throws RuntimeException if parsing fails
+     */
+    public static ParquetQueryParser parse(String query) {
+        // Flatten subquery wrappers before jOOQ parsing (regex is more robust)
+<span class="fc" id="L148">        String flattened = flattenSubqueryWrapper(query);</span>
+<span class="pc bpc" id="L149" title="1 of 2 branches missed.">        if (!flattened.equals(query)) {</span>
+<span class="nc" id="L150">            LOGGER.debug(&quot;Flattened subquery wrapper; parsing: {}&quot;, flattened);</span>
+<span class="nc" id="L151">            query = flattened;</span>
+        }
+<span class="fc" id="L153">        ParquetQueryParser cached = PARSE_CACHE.get(query);</span>
+<span class="fc bfc" id="L154" title="All 2 branches covered.">        if (cached != null) {</span>
+<span class="fc" id="L155">            return cached;</span>
+        }
+
+<span class="fc" id="L158">        Settings settings = new Settings()</span>
+<span class="fc" id="L159">                .withRenderFormatted(true)</span>
+<span class="fc" id="L160">                .withParseNameCase(ParseNameCase.AS_IS);</span>
+<span class="fc" id="L161">        DSLContext ctx = DSL.using(SQLDialect.DEFAULT, settings);</span>
+
+        try {
+<span class="fc" id="L164">            Query parsedQuery = ctx.parser().parseQuery(query);</span>
+
+<span class="fc bfc" id="L166" title="All 2 branches covered.">            if (parsedQuery instanceof Select&lt;?&gt; select) {</span>
+<span class="fc" id="L167">                LOGGER.debug(&quot;Parsing SQL query: {}&quot;, query);</span>
+<span class="fc" id="L168">                ParquetQueryParser parser = parseSelect(select, query);</span>
+<span class="fc" id="L169">                synchronized (PARSE_CACHE) {</span>
+<span class="fc" id="L170">                    PARSE_CACHE.put(query, parser);</span>
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">                    if (PARSE_CACHE.size() &gt; PARSE_CACHE_CAPACITY) {</span>
+<span class="nc" id="L172">                        PARSE_CACHE.remove(PARSE_CACHE.keySet().iterator().next());</span>
+                    }
+<span class="fc" id="L174">                }</span>
+<span class="fc" id="L175">                LOGGER.debug(&quot;Parsed query: {}&quot;, parser);</span>
+<span class="fc" id="L176">                return parser;</span>
+            } else {
+<span class="fc" id="L178">                throw new IllegalArgumentException(&quot;Only SELECT queries are supported: &quot; + query);</span>
+            }
+
+<span class="fc" id="L181">        } catch (Exception e) {</span>
+<span class="fc" id="L182">            LOGGER.error(&quot;Error parsing SQL query&quot;, e);</span>
+<span class="fc" id="L183">            throw new RuntimeException(&quot;Invalid SQL query: &quot; + query, e);</span>
+        }
+    }
+
+    /**
+     * Flattens &quot;SELECT ... FROM (SELECT ...) alias&quot; → &quot;SELECT ... FROM innerTable&quot;.
+     * Regex-based, operates on the raw SQL string before jOOQ parsing.
+     *
+     * @param query raw SQL query string
+     * @return flattened query, or original if no subquery wrapper detected
+     */
+    @SuppressWarnings(&quot;java:S3776&quot;)
+    private static String flattenSubqueryWrapper(String query) {
+<span class="fc" id="L196">        String q = query.trim();</span>
+
+<span class="fc" id="L198">        Matcher fromParen = Pattern.compile(&quot;(?i)\\bfrom\\s*\\(&quot;).matcher(q);</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        if (!fromParen.find()) {</span>
+<span class="fc" id="L200">            return q;</span>
+        }
+
+<span class="fc" id="L203">        int openParen = fromParen.end() - 1;</span>
+<span class="fc" id="L204">        String beforeFrom = q.substring(0, fromParen.start());</span>
+
+<span class="fc" id="L206">        int depth = 1;</span>
+<span class="fc" id="L207">        int i = openParen + 1;</span>
+<span class="fc bfc" id="L208" title="All 4 branches covered.">        while (i &lt; q.length() &amp;&amp; depth &gt; 0) {</span>
+<span class="fc" id="L209">            char c = q.charAt(i);</span>
+<span class="fc bfc" id="L210" title="All 2 branches covered.">            if (c == '(') {</span>
+<span class="fc" id="L211">                depth++;</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">            } else if (c == ')') {</span>
+<span class="fc" id="L213">                depth--;</span>
+            }
+<span class="fc" id="L215">            i++;</span>
+<span class="fc" id="L216">        }</span>
+<span class="fc bfc" id="L217" title="All 2 branches covered.">        if (depth != 0) {</span>
+<span class="fc" id="L218">            return q;</span>
+        }
+
+<span class="fc" id="L221">        String innerSQL = q.substring(openParen + 1, i - 1).trim();</span>
+<span class="fc" id="L222">        String afterParen = q.substring(i).trim();</span>
+
+<span class="fc" id="L224">        Matcher aliasM = Pattern.compile(&quot;^([a-zA-Z_][a-zA-Z0-9_]*)(.*)$&quot;,</span>
+<span class="fc" id="L225">                Pattern.DOTALL).matcher(afterParen);</span>
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">        if (!aliasM.matches()) {</span>
+<span class="nc" id="L227">            return q;</span>
+        }
+<span class="fc" id="L229">        String outerRest = aliasM.group(2).trim();</span>
+
+<span class="fc bfc" id="L231" title="All 2 branches covered.">        if (!innerSQL.toLowerCase(Locale.ROOT).startsWith(&quot;select&quot;)) {</span>
+<span class="fc" id="L232">            return q;</span>
+        }
+
+<span class="fc" id="L235">        Matcher innerFrom = Pattern.compile(&quot;(?i)\\bfrom\\s+(\\S+)&quot;).matcher(innerSQL);</span>
+<span class="pc bpc" id="L236" title="1 of 2 branches missed.">        if (!innerFrom.find()) {</span>
+<span class="nc" id="L237">            return q;</span>
+        }
+<span class="fc" id="L239">        String realTableRef = innerFrom.group(1).replaceAll(&quot;\\s*$&quot;, &quot;&quot;);</span>
+
+<span class="fc" id="L241">        String innerWhere = &quot;&quot;;</span>
+<span class="fc" id="L242">        Matcher innerWhereM = Pattern.compile(&quot;(?i)\\bwhere\\b(.+)$&quot;,</span>
+<span class="fc" id="L243">                Pattern.DOTALL).matcher(innerSQL);</span>
+<span class="fc bfc" id="L244" title="All 2 branches covered.">        if (innerWhereM.find()) {</span>
+<span class="fc" id="L245">            innerWhere = innerWhereM.group(1).trim();</span>
+        }
+
+<span class="fc" id="L248">        StringBuilder flat = new StringBuilder(beforeFrom);</span>
+<span class="fc" id="L249">        flat.append(&quot;from &quot;).append(realTableRef);</span>
+
+<span class="fc" id="L251">        String outerWhere = &quot;&quot;;</span>
+<span class="pc bpc" id="L252" title="1 of 2 branches missed.">        if (outerRest.toLowerCase(Locale.ROOT).startsWith(&quot;where &quot;)) {</span>
+<span class="fc" id="L253">            outerWhere = outerRest.substring(5).trim();</span>
+<span class="nc bnc" id="L254" title="All 2 branches missed.">        } else if (!outerRest.isEmpty()) {</span>
+<span class="nc" id="L255">            return q;</span>
+        }
+
+<span class="fc bfc" id="L258" title="All 2 branches covered.">        boolean hasInner = !innerWhere.isEmpty();</span>
+<span class="pc bpc" id="L259" title="1 of 2 branches missed.">        boolean hasOuter = !outerWhere.isEmpty();</span>
+<span class="pc bpc" id="L260" title="1 of 4 branches missed.">        if (hasInner &amp;&amp; hasOuter) {</span>
+<span class="fc" id="L261">            flat.append(&quot; where (&quot;).append(innerWhere).append(&quot;) and (&quot;).append(outerWhere).append(&quot;)&quot;);</span>
+<span class="pc bpc" id="L262" title="1 of 2 branches missed.">        } else if (hasInner) {</span>
+<span class="nc" id="L263">            flat.append(&quot; where &quot;).append(innerWhere);</span>
+<span class="pc bpc" id="L264" title="1 of 2 branches missed.">        } else if (hasOuter) {</span>
+<span class="fc" id="L265">            flat.append(&quot; where &quot;).append(outerWhere);</span>
+        }
+
+<span class="fc" id="L268">        return flat.toString();</span>
+    }
+
+    /**
+     * @param select jOOQ Select query object
+     * @param originalSql original SQL string for fallback parsing
+     * @return parsed query representation
+     */
+    private static ParquetQueryParser parseSelect(Select&lt;?&gt; select, String originalSql) {
+<span class="fc" id="L277">        List&lt;? extends Table&lt;?&gt;&gt; fromTables = select.$from();</span>
+
+<span class="fc" id="L279">        DSLContext noQuoteCtx = DSL.using(SQLDialect.DEFAULT,</span>
+<span class="fc" id="L280">                new Settings().withRenderQuotedNames(RenderQuotedNames.NEVER));</span>
+
+<span class="fc bfc" id="L282" title="All 2 branches covered.">        if (fromTables.size() &gt; 1) {</span>
+<span class="fc" id="L283">            throw new IllegalArgumentException(</span>
+<span class="fc" id="L284">                    &quot;Can only select from ONE table, but got query: &quot; + select.getSQL());</span>
+        }
+
+        // Detect JOIN via jOOQ rendered output
+<span class="fc" id="L288">        boolean isJoin = hasJoinKeywords(select);</span>
+
+<span class="fc bfc" id="L290" title="All 2 branches covered.">        if (isJoin) {</span>
+<span class="fc" id="L291">            return parseJoinSelect(select, noQuoteCtx, originalSql);</span>
+        }
+<span class="fc" id="L293">        return parseSingleTableSelect(select, fromTables, noQuoteCtx);</span>
+    }
+
+    /**
+     * Detects JOIN by checking whether the (single) FROM table renders with &quot;join&quot; keyword.
+     * jOOQ rendering is deterministic for all JOIN types.
+     *
+     * @param select jOOQ Select query object
+     * @return true if query contains JOIN
+     */
+    private static boolean hasJoinKeywords(Select&lt;?&gt; select) {
+<span class="fc" id="L304">        List&lt;? extends Table&lt;?&gt;&gt; from = select.$from();</span>
+<span class="pc bpc" id="L305" title="1 of 2 branches missed.">        if (from.size() &gt; 1) {</span>
+<span class="nc" id="L306">            return true;</span>
+        }
+<span class="pc bpc" id="L308" title="1 of 2 branches missed.">        if (from.size() == 1) {</span>
+<span class="fc" id="L309">            String rendered = DSL.using(SQLDialect.DEFAULT)</span>
+<span class="fc" id="L310">                    .render(from.get(0)).toLowerCase(Locale.ROOT);</span>
+<span class="fc" id="L311">            return rendered.contains(&quot; join &quot;);</span>
+        }
+<span class="nc" id="L313">        return false;</span>
+    }
+
+    /**
+     * Extracts table references from a JOIN SQL string using regex.
+     * Only matches table references immediately after FROM/JOIN keywords,
+     * avoiding false matches in ON clause column references.
+     */
+<span class="fc" id="L321">    private static final Pattern JOIN_KEYWORD = Pattern.compile(</span>
+            &quot;\\b(?:FROM|(?:(?:LEFT|RIGHT|FULL(?:\\s+OUTER)?|INNER|CROSS)\\s+)?JOIN)\\s+&quot;,
+            Pattern.CASE_INSENSITIVE);
+
+<span class="fc" id="L325">    private static final Pattern TABLE_REF = Pattern.compile(</span>
+            &quot;^(\\w+(?:\\.\\w+)?)(?:\\s+(?:AS\\s+)?(\\w+))?&quot;,
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * @param sql SQL query string
+     * @return list of extracted join tables
+     */
+    private static List&lt;JoinTable&gt; extractJoinTables(String sql) {
+<span class="fc" id="L334">        List&lt;JoinTable&gt; tables = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L335">        Matcher kw = JOIN_KEYWORD.matcher(sql);</span>
+<span class="fc bfc" id="L336" title="All 2 branches covered.">        while (kw.find()) {</span>
+<span class="fc" id="L337">            String rest = sql.substring(kw.end()).trim();</span>
+<span class="fc" id="L338">            Matcher tr = TABLE_REF.matcher(rest);</span>
+<span class="pc bpc" id="L339" title="1 of 2 branches missed.">            if (tr.find()) {</span>
+<span class="fc" id="L340">                String qualified = tr.group(1);</span>
+<span class="fc" id="L341">                String alias = tr.group(2);</span>
+<span class="fc" id="L342">                int dot = qualified.indexOf('.');</span>
+<span class="fc bfc" id="L343" title="All 2 branches covered.">                String schema = dot &gt; 0 ? qualified.substring(0, dot) : null;</span>
+<span class="fc bfc" id="L344" title="All 2 branches covered.">                String table = dot &gt; 0 ? qualified.substring(dot + 1) : qualified;</span>
+<span class="pc bpc" id="L345" title="1 of 2 branches missed.">                if (alias == null) {</span>
+<span class="nc" id="L346">                    alias = table;</span>
+                }
+<span class="fc" id="L348">                tables.add(new JoinTable(schema, table, alias));</span>
+            }
+<span class="fc" id="L350">        }</span>
+<span class="fc" id="L351">        return tables;</span>
+    }
+
+    /**
+     * @param select jOOQ Select query object
+     * @param noQuoteCtx DSL context with quoted names disabled
+     * @param originalSql original SQL string for regex-based join extraction
+     * @return parsed query representation with join info
+     */
+    private static ParquetQueryParser parseJoinSelect(Select&lt;?&gt; select,
+            DSLContext noQuoteCtx, String originalSql) {
+
+<span class="fc" id="L363">        List&lt;JoinTable&gt; joinTables = extractJoinTables(originalSql);</span>
+<span class="pc bpc" id="L364" title="1 of 2 branches missed.">        if (joinTables.isEmpty()) {</span>
+<span class="nc" id="L365">            throw new IllegalArgumentException(&quot;Could not extract table references from JOIN: &quot; + originalSql);</span>
+        }
+
+<span class="fc" id="L368">        List&lt;String&gt; columns = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L369">        List&lt;SelectExpr&gt; exprs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L370" title="All 2 branches covered.">        for (SelectFieldOrAsterisk sfoa : select.$select()) {</span>
+<span class="fc bfc" id="L371" title="All 2 branches covered.">            if (!(sfoa instanceof org.jooq.Field&lt;?&gt;)) {</span>
+<span class="fc" id="L372">                continue;</span>
+            }
+<span class="fc" id="L374">            org.jooq.Field&lt;?&gt; f = (org.jooq.Field&lt;?&gt;) sfoa;</span>
+<span class="fc" id="L375">            columns.add(f.getName());</span>
+<span class="fc" id="L376">            String outputName = noQuoteCtx.renderInlined(f).trim();</span>
+<span class="fc" id="L377">            exprs.add(new SelectExpr(SelectExpr.AggFunc.COLUMN, outputName, outputName));</span>
+<span class="fc" id="L378">        }</span>
+
+<span class="fc" id="L380">        Condition where = select.$where();</span>
+<span class="fc" id="L381">        DSLContext quotedCtx = DSL.using(SQLDialect.DEFAULT,</span>
+<span class="fc" id="L382">                new Settings().withRenderQuotedNames(RenderQuotedNames.ALWAYS));</span>
+<span class="fc" id="L383">        String filter = quotedCtx.renderInlined(where);</span>
+
+<span class="fc" id="L385">        String duckDbSql = rewriteTableRefs(originalSql, joinTables);</span>
+
+<span class="fc" id="L387">        JoinTable primary = joinTables.get(0);</span>
+<span class="fc" id="L388">        return new ParquetQueryParser(primary.schema, primary.table, columns, filter,</span>
+<span class="fc" id="L389">                false, Collections.emptyList(), exprs, true, joinTables, duckDbSql);</span>
+    }
+
+    /**
+     * @param select jOOQ Select query object
+     * @param fromTables list of FROM tables from the query
+     * @param noQuoteCtx DSL context with quoted names disabled
+     * @return parsed query representation for a single-table query
+     */
+    @SuppressWarnings(&quot;java:S3776&quot;)
+    private static ParquetQueryParser parseSingleTableSelect(Select&lt;?&gt; select,
+            List&lt;? extends Table&lt;?&gt;&gt; fromTables, DSLContext noQuoteCtx) {
+
+<span class="pc bpc" id="L402" title="1 of 2 branches missed.">        if (fromTables.size() != 1) {</span>
+<span class="nc" id="L403">            throw new IllegalArgumentException(&quot;Can only select from ONE table, but got query: &quot; + select.getSQL());</span>
+        }
+
+<span class="fc" id="L406">        String schema = Optional.ofNullable(fromTables.get(0).getSchema()).map(Schema::getName).orElse(null);</span>
+<span class="fc" id="L407">        String table = fromTables.get(0).getName();</span>
+
+<span class="fc" id="L409">        List&lt;String&gt; gbCols = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L410" title="All 2 branches covered.">        for (GroupField gf : select.$groupBy()) {</span>
+<span class="fc" id="L411">            gbCols.add(noQuoteCtx.render(gf).trim());</span>
+<span class="fc" id="L412">        }</span>
+
+<span class="fc" id="L414">        List&lt;String&gt; columns = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L415">        List&lt;SelectExpr&gt; exprs = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L416" title="All 2 branches covered.">        boolean hasAgg = !gbCols.isEmpty();</span>
+<span class="fc" id="L417">        DSLContext quotedCtx = DSL.using(SQLDialect.DEFAULT,</span>
+<span class="fc" id="L418">                new Settings().withRenderQuotedNames(RenderQuotedNames.ALWAYS));</span>
+
+<span class="fc bfc" id="L420" title="All 2 branches covered.">        for (SelectFieldOrAsterisk sfoa : select.$select()) {</span>
+<span class="fc bfc" id="L421" title="All 2 branches covered.">            if (!(sfoa instanceof org.jooq.Field&lt;?&gt;)) {</span>
+<span class="fc" id="L422">                continue;</span>
+            }
+<span class="fc" id="L424">            org.jooq.Field&lt;?&gt; selected = (org.jooq.Field&lt;?&gt;) sfoa;</span>
+<span class="fc" id="L425">            org.jooq.Field&lt;?&gt; f = selected;</span>
+<span class="fc" id="L426">            String outputName = noQuoteCtx.renderInlined(selected).trim();</span>
+<span class="fc bfc" id="L427" title="All 2 branches covered.">            if (selected instanceof org.jooq.impl.QOM.FieldAlias&lt;?&gt; alias) {</span>
+<span class="fc" id="L428">                f = alias.$field();</span>
+<span class="fc" id="L429">                outputName = selected.getName();</span>
+            }
+<span class="fc" id="L431">            columns.add(selected.getName());</span>
+
+<span class="fc bfc" id="L433" title="All 2 branches covered.">            if (f instanceof org.jooq.impl.QOM.Count count) {</span>
+<span class="fc" id="L434">                hasAgg = true;</span>
+<span class="fc" id="L435">                org.jooq.Field&lt;?&gt; arg = count.$field();</span>
+<span class="fc bfc" id="L436" title="All 4 branches covered.">                if (arg == null || arg instanceof org.jooq.Param&lt;?&gt;) {</span>
+<span class="fc" id="L437">                    exprs.add(new SelectExpr(SelectExpr.AggFunc.COUNT_STAR, null, outputName));</span>
+                } else {
+<span class="fc" id="L439">                    exprs.add(aggregateExpression(SelectExpr.AggFunc.COUNT,</span>
+                            arg, outputName, noQuoteCtx, quotedCtx));
+                }
+<span class="fc bfc" id="L442" title="All 2 branches covered.">            } else if (f instanceof org.jooq.impl.QOM.Sum sum) {</span>
+<span class="fc" id="L443">                hasAgg = true;</span>
+<span class="fc" id="L444">                exprs.add(aggregateExpression(SelectExpr.AggFunc.SUM,</span>
+<span class="fc" id="L445">                        sum.$field(), outputName, noQuoteCtx, quotedCtx));</span>
+<span class="fc bfc" id="L446" title="All 2 branches covered.">            } else if (f instanceof org.jooq.impl.QOM.Min&lt;?&gt; min) {</span>
+<span class="fc" id="L447">                hasAgg = true;</span>
+<span class="fc" id="L448">                exprs.add(aggregateExpression(SelectExpr.AggFunc.MIN,</span>
+<span class="fc" id="L449">                        min.$field(), outputName, noQuoteCtx, quotedCtx));</span>
+<span class="fc bfc" id="L450" title="All 2 branches covered.">            } else if (f instanceof org.jooq.impl.QOM.Max&lt;?&gt; max) {</span>
+<span class="fc" id="L451">                hasAgg = true;</span>
+<span class="fc" id="L452">                exprs.add(aggregateExpression(SelectExpr.AggFunc.MAX,</span>
+<span class="fc" id="L453">                        max.$field(), outputName, noQuoteCtx, quotedCtx));</span>
+            } else {
+<span class="fc" id="L455">                String inputColumn = noQuoteCtx.renderInlined(f).trim();</span>
+<span class="fc" id="L456">                exprs.add(new SelectExpr(SelectExpr.AggFunc.COLUMN, inputColumn, outputName));</span>
+            }
+<span class="fc" id="L458">        }</span>
+
+<span class="fc" id="L460">        Condition where = select.$where();</span>
+<span class="fc" id="L461">        String filter = quotedCtx.renderInlined(where);</span>
+
+<span class="fc" id="L463">        return new ParquetQueryParser(schema, table, columns, filter, hasAgg, gbCols, exprs);</span>
+    }
+
+    /**
+     * Creates an aggregate expression while retaining safe SQL and referenced columns.
+     *
+     * @param func aggregate function
+     * @param input aggregate input field
+     * @param outputName aggregate output name
+     * @param noQuoteCtx renderer for compatibility names
+     * @param quotedCtx renderer for executable DuckDB SQL
+     * @return parsed aggregate expression
+     */
+    private static SelectExpr aggregateExpression(SelectExpr.AggFunc func,
+            org.jooq.Field&lt;?&gt; input, String outputName,
+            DSLContext noQuoteCtx, DSLContext quotedCtx) {
+<span class="fc" id="L479">        String inputColumn = noQuoteCtx.renderInlined(input).trim();</span>
+<span class="fc" id="L480">        String inputExpression = quotedCtx.renderInlined(input).trim();</span>
+        Integer decimalScale = func == SelectExpr.AggFunc.SUM
+<span class="fc bfc" id="L482" title="All 4 branches covered.">                &amp;&amp; input.getDataType().isDecimal() ? input.getDataType().scale() : null;</span>
+<span class="fc" id="L483">        return new SelectExpr(func, inputColumn, inputExpression,</span>
+<span class="fc" id="L484">                referencedColumns(inputExpression), decimalScale, outputName);</span>
+    }
+
+    /**
+     * Extracts quoted physical column references from a rendered expression.
+     *
+     * @param expression quoted SQL expression
+     * @return referenced column names in encounter order
+     */
+    private static List&lt;String&gt; referencedColumns(String expression) {
+<span class="fc" id="L494">        List&lt;String&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L495">        Matcher matcher = Pattern.compile(&quot;\&quot;([^\&quot;]+)\&quot;&quot;).matcher(expression);</span>
+<span class="fc bfc" id="L496" title="All 2 branches covered.">        while (matcher.find()) {</span>
+<span class="fc" id="L497">            String column = matcher.group(1).replace(&quot;\&quot;\&quot;&quot;, &quot;\&quot;&quot;);</span>
+<span class="pc bpc" id="L498" title="1 of 2 branches missed.">            if (!result.contains(column)) {</span>
+<span class="fc" id="L499">                result.add(column);</span>
+            }
+<span class="fc" id="L501">        }</span>
+<span class="fc" id="L502">        return result;</span>
+    }
+
+    // ── JOIN helper methods ───────────────────────────────────────────────
+
+    private static final String JOIN_ANY_RE = &quot;(?:FROM|(?:(?:LEFT|RIGHT|FULL(?:\\s+OUTER)?|INNER|CROSS)\\s+)?JOIN)&quot;;
+
+    /**
+     * @param sql original SQL string
+     * @param joinTables list of join tables with their aliases
+     * @return SQL string with qualified table refs rewritten to aliases
+     */
+    static String rewriteTableRefs(String sql, List&lt;JoinTable&gt; joinTables) {
+<span class="fc" id="L515">        String result = sql;</span>
+<span class="fc bfc" id="L516" title="All 2 branches covered.">        for (JoinTable jt : joinTables) {</span>
+<span class="fc bfc" id="L517" title="All 2 branches covered.">            String qualified = jt.schema() != null</span>
+<span class="fc" id="L518">                    ? jt.schema() + &quot;.&quot; + jt.table() : jt.table();</span>
+<span class="fc bfc" id="L519" title="All 2 branches covered.">            if (!jt.alias().equals(jt.table())) {</span>
+<span class="fc" id="L520">                result = result.replaceAll(</span>
+<span class="fc" id="L521">                        &quot;(?i)(\\b&quot; + JOIN_ANY_RE + &quot;\\s+)&quot; + Pattern.quote(qualified)</span>
+<span class="fc" id="L522">                                + &quot;\\s+(?:AS\\s+)?&quot; + Pattern.quote(jt.alias()),</span>
+<span class="fc" id="L523">                        &quot;$1&quot; + Matcher.quoteReplacement(jt.alias()));</span>
+            } else {
+<span class="fc" id="L525">                result = result.replaceAll(</span>
+<span class="fc" id="L526">                        &quot;(?i)(\\b&quot; + JOIN_ANY_RE + &quot;\\s+|,\\s*)&quot; + Pattern.quote(qualified) + &quot;\\b&quot;,</span>
+<span class="fc" id="L527">                        &quot;$1&quot; + Matcher.quoteReplacement(jt.table()));</span>
+            }
+<span class="fc" id="L529">        }</span>
+<span class="fc" id="L530">        return result;</span>
+    }
+
+    // ── public accessors ──────────────────────────────────────────────────
+
+    /**
+     * @return schema name, or null if not specified
+     */
+    public String getSchema() {
+<span class="nc" id="L539">        return schema;</span>
+    }
+
+    /**
+     * @return table name
+     */
+    public String getTable() {
+<span class="nc" id="L546">        return table;</span>
+    }
+
+    /**
+     * @return selected column names
+     */
+    public List&lt;String&gt; getColumns() {
+<span class="nc" id="L553">        return columns;</span>
+    }
+
+    /**
+     * @return WHERE clause filter expression
+     */
+    public String getFilter() {
+<span class="nc" id="L560">        return filter;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="pc bpc" id="L565" title="1 of 2 branches missed.">        if (isJoin) {</span>
+<span class="nc" id="L566">            return &quot;ParquetQueryParser{isJoin=true, joinTables=&quot; + joinTables</span>
+                    + &quot;, columns=&quot; + columns + &quot;, filter='&quot; + filter + &quot;'}&quot;;
+        }
+<span class="fc" id="L569">        return &quot;ParquetQueryParser{&quot; +</span>
+                &quot;schema='&quot; + schema + '\'' +
+                &quot;, table='&quot; + table + '\'' +
+                &quot;, columns=&quot; + columns +
+                &quot;, filter='&quot; + filter + '\'' +
+                &quot;, hasAggregation=&quot; + hasAggregation +
+                &quot;, groupByColumnNames=&quot; + groupByColumnNames +
+                '}';
+    }
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

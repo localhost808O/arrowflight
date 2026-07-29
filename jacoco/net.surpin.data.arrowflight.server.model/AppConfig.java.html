@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AppConfig.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.model</a> &gt; <span class="el_source">AppConfig.java</span></div><h1>AppConfig.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.model;
+
+/**
+ * Server configuration loaded at startup.
+ * Values are resolved from arrowflight.properties, system properties, and environment variables.
+ */
+<span class="fc" id="L7">public record AppConfig(</span>
+    int numServers,
+    int batchSize,
+    int ioParallelism,
+    int ioFileBufferSize,
+    int duckDbWarmConnections,
+    int duckDbGroups,
+    int duckDbThreads,
+    String duckDbHdfsExtension,
+    boolean duckDbAllowUnsignedExtensions,
+    String duckDbHdfsDefaultNamenode,
+    String duckDbHdfsHaNamenodes,
+    String duckDbHdfsShortcircuit,
+    String duckDbHdfsDomainSocketPath,
+    boolean metricsEnabled,
+    int grpcMaxInboundMessageSize,
+    int flightBackpressureThresholdBytes,
+    long flightListenerReadyTimeoutMillis,
+    String dataDir,
+    String localDataDir,
+    int port,
+    int hazelcastPort,
+    int hazelcastClusterJoinTimeoutSec,
+    int clientMaxRetries,
+    int clientRetryBackoffMs,
+    int clientConnectTimeoutMs
+) {
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightDataWriter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.write</a> &gt; <span class="el_source">FlightDataWriter.java</span></div><h1>FlightDataWriter.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.write;
+
+import net.surpin.data.arrowflight.client.model.ArrowConversion;
+import net.surpin.data.arrowflight.client.Client;
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.write.WriteProtocol;
+import net.surpin.data.arrowflight.client.write.WriteStatement;
+import org.apache.arrow.flight.sql.FlightSqlClient;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.connector.write.DataWriter;
+import org.apache.spark.sql.connector.write.WriterCommitMessage;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import java.io.IOException;
+import java.util.function.Function;
+import java.util.stream.IntStream;
+
+/**
+ * Flight DataWriter writes rows to the target flight table
+ */
+public final class FlightDataWriter implements DataWriter&lt;InternalRow&gt; {
+    private int partitionId;
+    private long taskId;
+    private String epochId;
+
+    private final StructType dataSchema;
+    private final Schema arrowSchema;
+
+    private final WriteStatement stmt;
+    private final int batchSize;
+
+    private final Client client;
+<span class="nc" id="L38">    private Field[] fields = null;</span>
+<span class="nc" id="L39">    private FlightSqlClient.PreparedStatement preparedStmt = null;</span>
+<span class="nc" id="L40">    private VectorSchemaRoot root = null;</span>
+<span class="nc" id="L41">    private ArrowConversion conversion = null;</span>
+
+    private final java.util.List&lt;InternalRow&gt; rows;
+<span class="nc" id="L44">    private long count = 0;</span>
+
+    /**
+     * Construct a DataWriter for batch write
+     * @param partitionId - the partition id of the data block to be written
+     * @param taskId - the task id of the write operation
+     * @param configuration - the configuration of remote flight service
+     * @param protocol - the protocol for writing - sql or arrow
+     * @param stmt - the write-statement
+     * @param batchSize - the batch size for write
+     */
+    public FlightDataWriter(int partitionId, long taskId, Configuration configuration, WriteStatement stmt, WriteProtocol protocol, int batchSize) {
+<span class="nc" id="L56">        this(configuration, stmt, protocol, batchSize);</span>
+<span class="nc" id="L57">        this.partitionId = partitionId;</span>
+<span class="nc" id="L58">        this.taskId = taskId;</span>
+<span class="nc" id="L59">        this.epochId = &quot;&quot;;</span>
+<span class="nc" id="L60">    }</span>
+
+    /**
+     * Construct a DataWriter for streaming write
+     * @param partitionId - the partition id of the data block to be written
+     * @param taskId - the task id of the write operation
+     * @param configuration - the configuration of remote flight service
+     * @param protocol - the protocol for writing - sql or arrow
+     * @param stmt - the write-statement
+     * @param batchSize - the batch size for write
+     * @param epochId - a monotonically increasing id for streaming queries that are split into discrete periods of execution.
+     */
+    public FlightDataWriter(int partitionId, long taskId, long epochId, Configuration configuration, WriteStatement stmt, WriteProtocol protocol, int batchSize) {
+<span class="nc" id="L73">        this(configuration, stmt, protocol, batchSize);</span>
+<span class="nc" id="L74">        this.partitionId = partitionId;</span>
+<span class="nc" id="L75">        this.taskId = taskId;</span>
+<span class="nc" id="L76">        this.epochId = Long.toString(epochId);</span>
+<span class="nc" id="L77">    }</span>
+
+    /**
+     * Internal Constructor
+     * @param configuration - the configuration of remote flight service
+     * @param protocol - the protocol for writing - sql or arrow
+     * @param stmt - the write-statement
+     * @param batchSize - the batch size for write
+     */
+<span class="nc" id="L86">    private FlightDataWriter(Configuration configuration, WriteStatement stmt, WriteProtocol protocol, int batchSize) {</span>
+<span class="nc" id="L87">        this.stmt = stmt;</span>
+<span class="nc" id="L88">        this.batchSize = batchSize;</span>
+
+<span class="nc" id="L90">        this.dataSchema = this.stmt.getDataSchema();</span>
+<span class="nc" id="L91">        this.client = Client.getOrCreate(configuration);</span>
+<span class="nc bnc" id="L92" title="All 2 branches missed.">        if (protocol == WriteProtocol.PREPARED_SQL) {</span>
+<span class="nc" id="L93">            this.preparedStmt = this.client.getPreparedStatement(this.stmt.getStatement());</span>
+<span class="nc" id="L94">            this.arrowSchema = this.preparedStmt.getParameterSchema();</span>
+<span class="nc" id="L95">            this.fields = this.arrowSchema.getFields().toArray(new Field[0]);</span>
+<span class="nc" id="L96">            this.root = VectorSchemaRoot.create(this.arrowSchema, new RootAllocator(Integer.MAX_VALUE));</span>
+<span class="nc" id="L97">            this.conversion = ArrowConversion.getOrCreate();</span>
+        } else {
+            try {
+<span class="nc" id="L100">                this.arrowSchema = this.stmt.getArrowSchema();</span>
+<span class="nc" id="L101">            } catch (Exception e) {</span>
+<span class="nc" id="L102">                throw new RuntimeException(&quot;The arrow schema is invalid.&quot;, e);</span>
+<span class="nc" id="L103">            }</span>
+        }
+<span class="nc" id="L105">        this.rows = new java.util.ArrayList&lt;&gt;();</span>
+<span class="nc" id="L106">    }</span>
+
+    /**
+     * Write one row
+     * @param row - the row of data
+     * @throws IOException - thrown when writing failed
+     */
+    @Override
+    public void write(InternalRow row) throws IOException {
+<span class="nc" id="L115">        this.rows.add(row.copy());</span>
+<span class="nc bnc" id="L116" title="All 2 branches missed.">        if (this.rows.size() &gt; this.batchSize) {</span>
+<span class="nc" id="L117">            this.write(this.rows.toArray(new InternalRow[0]));</span>
+<span class="nc" id="L118">            this.rows.clear();</span>
+        }
+<span class="nc" id="L120">    }</span>
+    /**
+     * Write out all rows
+     * @param rows - the data rows
+     */
+    private void write(InternalRow[] rows) {
+<span class="nc bnc" id="L126" title="All 2 branches missed.">        if (this.conversion != null) {</span>
+<span class="nc" id="L127">            Function&lt;String, DataType&gt; dtFind = (name) -&gt; this.dataSchema.find(field -&gt; field.name().equalsIgnoreCase(name)).map(StructField::dataType).get();</span>
+<span class="nc" id="L128">            IntStream.range(0, this.fields.length).forEach(idx -&gt; this.conversion.populate(this.root.getVector(idx), rows, idx, dtFind.apply(this.fields[idx].getName())));</span>
+<span class="nc" id="L129">            this.root.setRowCount(rows.length);</span>
+<span class="nc" id="L130">            this.preparedStmt.setParameters(this.root);</span>
+            try {
+<span class="nc" id="L132">                this.client.executeUpdate(this.preparedStmt);</span>
+            } finally {
+<span class="nc" id="L134">                this.preparedStmt.clearParameters();</span>
+<span class="nc" id="L135">                this.root.clear();</span>
+            }
+<span class="nc" id="L137">        } else {</span>
+<span class="nc" id="L138">            this.client.execute(this.stmt.fillStatement(rows, this.arrowSchema.getFields().toArray(new Field[0])));</span>
+        }
+<span class="nc" id="L140">        this.count += rows.length;</span>
+<span class="nc" id="L141">    }</span>
+
+    /**
+     * Commit write
+     * @return - a commit-message
+     */
+    @Override
+    public WriterCommitMessage commit() {
+        //write any left-over
+<span class="nc bnc" id="L150" title="All 2 branches missed.">        if (this.rows.size() &gt; 0) {</span>
+<span class="nc" id="L151">            this.write(this.rows.toArray(new InternalRow[0]));</span>
+<span class="nc" id="L152">            this.rows.clear();</span>
+        }
+
+<span class="nc" id="L155">        long cnt = this.count;</span>
+<span class="nc" id="L156">        this.count = 0;</span>
+<span class="nc bnc" id="L157" title="All 2 branches missed.">        return (this.epochId.length() == 0) ? new FlightWriterCommitMessage(this.partitionId, this.taskId, cnt)</span>
+<span class="nc" id="L158">            : new FlightWriterCommitMessage(this.partitionId, this.taskId, this.epochId, cnt);</span>
+    }
+
+    /**
+     * Abort write
+     * @throws IOException - the exception with the error message
+     */
+    @Override
+    public void abort() throws IOException {
+<span class="nc bnc" id="L167" title="All 2 branches missed.">        throw (this.epochId.length() == 0) ? new FlightWriteAbortException(this.partitionId, this.taskId, this.count)</span>
+<span class="nc" id="L168">            : new FlightWriteAbortException(this.partitionId, this.taskId, this.epochId, this.count);</span>
+    }
+    
+    /**
+     * Close any connections
+     */
+    @Override
+    public void close() {
+<span class="nc bnc" id="L176" title="All 2 branches missed.">        if (this.preparedStmt != null) {</span>
+<span class="nc" id="L177">            this.preparedStmt.close();</span>
+        }
+<span class="nc bnc" id="L179" title="All 2 branches missed.">        if (this.root != null) {</span>
+<span class="nc" id="L180">            this.root.close();</span>
+        }
+<span class="nc" id="L182">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

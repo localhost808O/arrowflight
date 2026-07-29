@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExecutionPath.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.model</a> &gt; <span class="el_source">ExecutionPath.java</span></div><h1>ExecutionPath.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.model;
+
+/**
+ * Identifies the runtime-selected execution path for a Flight query.
+ */
+<span class="fc" id="L6">public enum ExecutionPath {</span>
+<span class="fc" id="L7">    FOOTER_COUNT(&quot;footer-count&quot;, true),</span>
+<span class="fc" id="L8">    FOOTER_STATS(&quot;footer-stats&quot;, true),</span>
+<span class="fc" id="L9">    DUCKDB_SCAN(&quot;duckdb-scan&quot;, true),</span>
+<span class="fc" id="L10">    DUCKDB_AGGREGATION(&quot;duckdb-aggregation&quot;, true),</span>
+<span class="fc" id="L11">    DUCKDB_JOIN(&quot;duckdb-join&quot;, true),</span>
+<span class="fc" id="L12">    DISTRIBUTED(&quot;distributed&quot;, true),</span>
+<span class="fc" id="L13">    MIXED(&quot;mixed&quot;, true),</span>
+<span class="fc" id="L14">    FALLBACK(&quot;fallback&quot;, false),</span>
+<span class="fc" id="L15">    UNKNOWN(&quot;unknown&quot;, false);</span>
+
+    private final String label;
+    private final boolean pushdownEvidence;
+
+<span class="fc" id="L20">    ExecutionPath(String label, boolean pushdownEvidence) {</span>
+<span class="fc" id="L21">        this.label = label;</span>
+<span class="fc" id="L22">        this.pushdownEvidence = pushdownEvidence;</span>
+<span class="fc" id="L23">    }</span>
+
+    /**
+     * Returns the stable machine-readable path label.
+     *
+     * @return path label
+     */
+    public String label() {
+<span class="fc" id="L31">        return label;</span>
+    }
+
+    /**
+     * Reports whether this path can support a pushdown claim.
+     *
+     * @return true when the path is publishable pushdown evidence
+     */
+    public boolean isPushdownEvidence() {
+<span class="fc" id="L40">        return pushdownEvidence;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

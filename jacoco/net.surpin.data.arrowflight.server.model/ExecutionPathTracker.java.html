@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExecutionPathTracker.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.model</a> &gt; <span class="el_source">ExecutionPathTracker.java</span></div><h1>ExecutionPathTracker.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.model;
+
+import java.util.Objects;
+
+/**
+ * Tracks the execution path selected while one query is running.
+ */
+<span class="fc" id="L8">public final class ExecutionPathTracker {</span>
+
+<span class="fc" id="L10">    private ExecutionPath path = ExecutionPath.UNKNOWN;</span>
+    private ExecutionPath fallbackTarget;
+<span class="fc" id="L12">    private String reason = &quot;execution-path-not-selected&quot;;</span>
+
+    /**
+     * Selects a concrete runtime execution path.
+     *
+     * @param selectedPath selected path
+     */
+    public void select(ExecutionPath selectedPath) {
+<span class="fc" id="L20">        path = Objects.requireNonNull(selectedPath, &quot;selectedPath&quot;);</span>
+<span class="fc" id="L21">        fallbackTarget = null;</span>
+<span class="fc" id="L22">        reason = null;</span>
+<span class="fc" id="L23">    }</span>
+
+    /**
+     * Records an attempted optimization that fell back to another engine path.
+     *
+     * @param target fallback target
+     * @param fallbackReason reason for fallback
+     */
+    public void fallbackTo(ExecutionPath target, String fallbackReason) {
+<span class="fc" id="L32">        path = ExecutionPath.FALLBACK;</span>
+<span class="fc" id="L33">        fallbackTarget = Objects.requireNonNull(target, &quot;target&quot;);</span>
+<span class="fc" id="L34">        reason = Objects.requireNonNull(fallbackReason, &quot;fallbackReason&quot;);</span>
+<span class="fc" id="L35">    }</span>
+
+    /**
+     * Records that no concrete execution path could be selected.
+     *
+     * @param unknownReason reason the path is unknown
+     */
+    public void unknown(String unknownReason) {
+<span class="fc" id="L43">        path = ExecutionPath.UNKNOWN;</span>
+<span class="fc" id="L44">        fallbackTarget = null;</span>
+<span class="fc" id="L45">        reason = Objects.requireNonNull(unknownReason, &quot;unknownReason&quot;);</span>
+<span class="fc" id="L46">    }</span>
+
+    /**
+     * Returns the selected stable path.
+     *
+     * @return selected path
+     */
+    public ExecutionPath path() {
+<span class="fc" id="L54">        return path;</span>
+    }
+
+    /**
+     * Returns the concrete fallback target when one was used.
+     *
+     * @return fallback target or null
+     */
+    public ExecutionPath fallbackTarget() {
+<span class="fc" id="L63">        return fallbackTarget;</span>
+    }
+
+    /**
+     * Returns the fallback or unknown-path reason.
+     *
+     * @return reason or null
+     */
+    public String reason() {
+<span class="fc" id="L72">        return reason;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

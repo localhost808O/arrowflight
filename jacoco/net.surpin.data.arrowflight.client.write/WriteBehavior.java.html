@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WriteBehavior.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.write</a> &gt; <span class="el_source">WriteBehavior.java</span></div><h1>WriteBehavior.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.write;
+
+import java.io.Serializable;
+import java.util.Map;
+
+/**
+ * Defines the write-behavior
+ */
+public class WriteBehavior implements Serializable {
+    private final WriteProtocol protocol;
+    private final Map&lt;String, String&gt; typeMapping;
+
+    private final int batchSize;
+    private final String[] mergeByColumns;
+
+    //the truncate flag
+<span class="fc" id="L17">    private Boolean truncate = false;</span>
+
+    /**
+     * Construct a WriteBehavior
+     * @param protocol - the protocol for submitting DML requests. It must be either literal-sql or prepared-sql
+     * @param batchSize - the size of each batch to be written
+     * @param mergeByColumn - the columns on which to merge data into the target table
+     * @param typeMapping - the arrow-type to target data-type mapping
+     */
+<span class="fc" id="L26">    public WriteBehavior(WriteProtocol protocol, int batchSize, String[] mergeByColumn, Map&lt;String, String&gt; typeMapping) {</span>
+<span class="fc" id="L27">        this.protocol = protocol;</span>
+<span class="fc" id="L28">        this.batchSize = batchSize;</span>
+<span class="fc" id="L29">        this.mergeByColumns = mergeByColumn;</span>
+<span class="fc" id="L30">        this.typeMapping = typeMapping;</span>
+<span class="fc" id="L31">    }</span>
+
+    /**
+     * Get the write-procotol
+     * @return - the protocol for writing
+     */
+    public WriteProtocol getProtocol() {
+<span class="nc" id="L38">        return this.protocol;</span>
+    }
+
+    /**
+     * Get the size of each batch
+     * @return - the size of batch for writing
+     */
+    public int getBatchSize() {
+<span class="nc" id="L46">        return this.batchSize;</span>
+    }
+
+    /**
+     * Get the merge-by columns
+     * @return - the columns on which to merge data into the target table
+     */
+    public String[] getMergeByColumns() {
+<span class="fc bfc" id="L54" title="All 2 branches covered.">        return isTruncate() ? new String[0] : this.mergeByColumns;</span>
+    }
+
+    /**
+     * Get the type-mapping
+     * @return - the mapping between arrow-type &amp; target data-types
+     */
+    public Map&lt;String, String&gt; getTypeMapping() {
+<span class="nc" id="L62">        return this.typeMapping;</span>
+    }
+
+    /**
+     * set the flag to truncate the target table
+     */
+    public void truncate() {
+<span class="fc bfc" id="L69" title="All 4 branches covered.">        if (this.mergeByColumns != null &amp;&amp; this.mergeByColumns.length &gt; 0) {</span>
+<span class="fc" id="L70">            throw new RuntimeException(&quot;The merge-by can only work with append mode.&quot;);</span>
+        }
+<span class="fc" id="L72">        this.truncate = true;</span>
+<span class="fc" id="L73">    }</span>
+
+    /**
+     * Flag to truncate the target table
+     * @return - true if it is to truncate the target table
+     */
+    public Boolean isTruncate() {
+<span class="fc" id="L80">        return this.truncate;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,507 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>QueryPlanner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.services</a> &gt; <span class="el_source">QueryPlanner.java</span></div><h1>QueryPlanner.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.services;
+
+import org.apache.arrow.flight.FlightEndpoint;
+import org.apache.arrow.flight.Location;
+import org.apache.arrow.flight.Ticket;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.protobuf.Any;
+import com.google.protobuf.ByteString;
+import org.apache.arrow.flight.sql.impl.FlightSql;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import net.surpin.data.arrowflight.server.adapters.HostUtils;
+import net.surpin.data.arrowflight.server.adapters.ParquetAdapter;
+import net.surpin.data.arrowflight.server.services.ParquetQueryParser;
+import net.surpin.data.arrowflight.server.model.FileAssignment;
+import net.surpin.data.arrowflight.server.model.HandleState;
+import net.surpin.data.arrowflight.server.model.QueryPlan;
+
+import net.surpin.data.arrowflight.server.LogUtil;
+
+/**
+ * Plans query execution across cluster nodes.
+ * Determines file locations, assigns files to servers based on data locality and load,
+ * and creates Flight endpoints for distributed execution.
+ */
+public final class QueryPlanner {
+
+<span class="fc" id="L46">    private static final Logger LOGGER = LoggerFactory.getLogger(QueryPlanner.class);</span>
+<span class="fc" id="L47">    private static final long FILE_PLAN_TTL_NANOS = TimeUnit.SECONDS.toNanos(30);</span>
+
+    private final ParquetAdapter parquetAdapter;
+    private final ClusterService clusterService;
+<span class="fc" id="L51">    private final Map&lt;String, CachedFilePlan&gt; filePlanCache = new ConcurrentHashMap&lt;&gt;();</span>
+
+    /**
+     * Stores immutable table file assignments until the inventory refresh deadline.
+     *
+     * @param files cached file assignments
+     * @param expiresAtNanos monotonic expiration deadline
+     */
+<span class="fc" id="L59">    private record CachedFilePlan(</span>
+            Map&lt;String, FileAssignment&gt; files, long expiresAtNanos) {
+    }
+
+    /**
+     * Contains one validated view of live servers and their loads.
+     *
+     * @param serverUris live server URIs
+     * @param serverLoads current load by live server
+     */
+<span class="fc" id="L69">    private record ClusterSnapshot(</span>
+            Set&lt;String&gt; serverUris, Map&lt;String, Long&gt; serverLoads) {
+    }
+
+    /**
+     * Creates QueryPlanner.
+     *
+     * @param parquetAdapter Parquet metadata adapter
+     * @param clusterService cluster coordination service
+     */
+<span class="fc" id="L79">    public QueryPlanner(ParquetAdapter parquetAdapter, ClusterService clusterService) {</span>
+<span class="fc" id="L80">        this.parquetAdapter = parquetAdapter;</span>
+<span class="fc" id="L81">        this.clusterService = clusterService;</span>
+        try {
+<span class="fc" id="L83">            this.clusterService.registerLocalFiles(this.parquetAdapter.localFileInventory());</span>
+<span class="fc" id="L84">            this.parquetAdapter.initCatalogReader();</span>
+<span class="nc" id="L85">        } catch (IOException e) {</span>
+<span class="nc" id="L86">            throw new UncheckedIOException(&quot;Unable to publish local Parquet inventory&quot;, e);</span>
+<span class="fc" id="L87">        }</span>
+<span class="fc" id="L88">    }</span>
+
+    /**
+     * Determines Flight endpoints for a SQL query, distributing files across live servers.
+     * Handles JOIN queries only when one node owns every required shard.
+     *
+     * @param query SQL query
+     * @return list of Flight endpoints
+     * @throws IOException on file system error
+     */
+    public List&lt;FlightEndpoint&gt; determineEndpoints(String query)
+            throws IOException {
+<span class="nc" id="L100">        return plan(query).endpoints();</span>
+    }
+
+    /**
+     * Plans endpoints and estimates Parquet input statistics for Spark.
+     *
+     * @param query SQL query
+     * @return endpoints with byte and row estimates
+     * @throws IOException on file-system or cluster metadata failure
+     */
+    public QueryPlan plan(String query) throws IOException {
+<span class="fc" id="L111">        long t = LogUtil.mark();</span>
+<span class="fc" id="L112">        ParquetQueryParser parsed = ParquetQueryParser.parse(query);</span>
+<span class="fc" id="L113">        long tSv = LogUtil.mark();</span>
+<span class="fc" id="L114">        ClusterSnapshot cluster = validatedCluster();</span>
+<span class="fc" id="L115">        Set&lt;String&gt; allServerUris = cluster.serverUris();</span>
+<span class="fc" id="L116">        LogUtil.logTiming(tSv, &quot;planning.validateServers&quot;, &quot;servers=&quot; + allServerUris.size());</span>
+<span class="fc" id="L117">        long tPaths = LogUtil.mark();</span>
+<span class="fc" id="L118">        Map&lt;String, FileAssignment&gt; pathLocations = validatedPathLocations(parsed, allServerUris);</span>
+<span class="fc" id="L119">        LogUtil.logTiming(tPaths, &quot;planning.fileLocations&quot;, &quot;files=&quot; + pathLocations.size());</span>
+
+<span class="fc" id="L121">        boolean loadTracked = hasReplicatedFiles(pathLocations, allServerUris);</span>
+        List&lt;FlightEndpoint&gt; endpoints;
+<span class="pc bpc" id="L123" title="1 of 2 branches missed.">        if (parsed.isJoin) {</span>
+<span class="nc" id="L124">            endpoints = joinEndpoints(</span>
+                    query, pathLocations, allServerUris, loadTracked);
+        } else {
+<span class="fc" id="L127">            endpoints = distributeEndpoints(query, pathLocations,</span>
+<span class="fc" id="L128">                    new HashMap&lt;&gt;(cluster.serverLoads()), loadTracked);</span>
+        }
+<span class="fc" id="L130">        long totalBytes = pathLocations.values().stream()</span>
+<span class="fc" id="L131">                .mapToLong(FileAssignment::size).sum();</span>
+<span class="fc" id="L132">        long totalRecords = parquetAdapter.estimateRowCount(pathLocations);</span>
+<span class="fc" id="L133">        LogUtil.logTiming(t, &quot;planning.determineEndpoints&quot;, &quot;endpoints=&quot; + endpoints.size() + &quot; files=&quot; + pathLocations.size());</span>
+<span class="fc" id="L134">        return new QueryPlan(endpoints, totalBytes, totalRecords);</span>
+    }
+
+    private ClusterSnapshot validatedCluster() throws IOException {
+<span class="fc" id="L138">        long t = LogUtil.mark();</span>
+<span class="fc" id="L139">        Map&lt;String, Long&gt; registry = clusterService.allServerLoads();</span>
+<span class="fc bfc" id="L140" title="All 2 branches covered.">        if (registry.isEmpty()) {</span>
+<span class="fc" id="L141">            throw new IOException(&quot;Flight server registry is empty&quot;);</span>
+        }
+<span class="fc" id="L143">        Set&lt;String&gt; uris = new LinkedHashSet&lt;&gt;(clusterService.filterLiveServers(registry.keySet()));</span>
+<span class="fc bfc" id="L144" title="All 2 branches covered.">        if (uris.isEmpty()) {</span>
+<span class="fc" id="L145">            throw new IOException(&quot;No live Flight servers are registered&quot;);</span>
+        }
+<span class="fc" id="L147">        Set&lt;String&gt; missing = uris.stream()</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">                .filter(uri -&gt; !clusterService.hasFileInventory(uri))</span>
+<span class="fc" id="L149">                .collect(Collectors.toCollection(LinkedHashSet::new));</span>
+<span class="fc bfc" id="L150" title="All 2 branches covered.">        if (!missing.isEmpty()) {</span>
+<span class="fc" id="L151">            throw new IOException(&quot;Flight nodes have not published file inventories: &quot; + missing);</span>
+        }
+<span class="fc" id="L153">        LogUtil.logTiming(t, &quot;planning.validateServers&quot;, &quot;live=&quot; + uris.size() + &quot; total=&quot; + registry.size());</span>
+<span class="fc" id="L154">        Map&lt;String, Long&gt; serverLoad = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">        for (String uri : uris) {</span>
+<span class="fc" id="L156">            Long load = registry.get(uri);</span>
+<span class="pc bpc" id="L157" title="1 of 2 branches missed.">            serverLoad.put(uri, load != null ? load : 0L);</span>
+<span class="fc" id="L158">        }</span>
+<span class="fc" id="L159">        return new ClusterSnapshot(Set.copyOf(uris), Map.copyOf(serverLoad));</span>
+    }
+
+    private Map&lt;String, FileAssignment&gt; validatedPathLocations(
+            ParquetQueryParser parsed, Set&lt;String&gt; allServerUris) throws IOException {
+<span class="fc" id="L164">        String cacheKey = sourceCacheKey(parsed);</span>
+<span class="fc" id="L165">        long now = System.nanoTime();</span>
+<span class="fc" id="L166">        CachedFilePlan cached = filePlanCache.get(cacheKey);</span>
+        Map&lt;String, FileAssignment&gt; pathLocations;
+<span class="pc bpc" id="L168" title="1 of 4 branches missed.">        boolean reusedCache = cached != null &amp;&amp; cached.expiresAtNanos() &gt; now;</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">        if (reusedCache) {</span>
+<span class="fc" id="L170">            pathLocations = cached.files();</span>
+        } else {
+<span class="fc" id="L172">            pathLocations = loadFilePlan(parsed, cacheKey, now);</span>
+        }
+        try {
+<span class="fc" id="L175">            validatePathLocations(pathLocations, parsed, allServerUris);</span>
+<span class="nc" id="L176">        } catch (IOException e) {</span>
+<span class="nc bnc" id="L177" title="All 2 branches missed.">            if (!reusedCache) {</span>
+<span class="nc" id="L178">                throw e;</span>
+            }
+<span class="nc" id="L180">            filePlanCache.remove(cacheKey, cached);</span>
+<span class="nc" id="L181">            pathLocations = loadFilePlan(parsed, cacheKey, System.nanoTime());</span>
+<span class="nc" id="L182">            validatePathLocations(pathLocations, parsed, allServerUris);</span>
+<span class="fc" id="L183">        }</span>
+<span class="fc" id="L184">        return pathLocations;</span>
+    }
+
+    /**
+     * Loads and caches file assignments for referenced tables.
+     *
+     * @param parsed parsed SQL query
+     * @param cacheKey normalized source-table key
+     * @param now current monotonic time
+     * @return immutable file assignments
+     */
+    private Map&lt;String, FileAssignment&gt; loadFilePlan(
+            ParquetQueryParser parsed, String cacheKey, long now) {
+<span class="fc" id="L197">        Map&lt;String, FileAssignment&gt; loaded = filterForQuery(</span>
+<span class="fc" id="L198">                clusterService.fileLocations(), parsed);</span>
+<span class="fc" id="L199">        Map&lt;String, FileAssignment&gt; immutable = Collections.unmodifiableMap(</span>
+                new LinkedHashMap&lt;&gt;(loaded));
+<span class="pc bpc" id="L201" title="1 of 2 branches missed.">        if (!immutable.isEmpty()) {</span>
+<span class="fc" id="L202">            filePlanCache.put(cacheKey, new CachedFilePlan(</span>
+                    immutable, now + FILE_PLAN_TTL_NANOS));
+        }
+<span class="fc" id="L205">        return immutable;</span>
+    }
+
+    /**
+     * Validates cached assignments against current live cluster membership.
+     *
+     * @param pathLocations file assignments
+     * @param parsed parsed SQL query
+     * @param allServerUris live server URIs
+     * @throws IOException when files or required shard owners are unavailable
+     */
+    private static void validatePathLocations(
+            Map&lt;String, FileAssignment&gt; pathLocations,
+            ParquetQueryParser parsed, Set&lt;String&gt; allServerUris)
+            throws IOException {
+<span class="pc bpc" id="L220" title="1 of 2 branches missed.">        if (pathLocations.isEmpty()) {</span>
+<span class="nc" id="L221">            throw new IOException(&quot;No distributed Parquet files found for query: &quot; + parsed);</span>
+        }
+<span class="fc bfc" id="L223" title="All 2 branches covered.">        for (Map.Entry&lt;String, FileAssignment&gt; file : pathLocations.entrySet()) {</span>
+<span class="fc" id="L224">            boolean hasLiveOwner = file.getValue().hosts().stream()</span>
+<span class="fc" id="L225">                    .anyMatch(allServerUris::contains);</span>
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">            if (!hasLiveOwner) {</span>
+<span class="nc" id="L227">                throw new IOException(&quot;No live Flight node owns required shard: &quot; + file.getKey());</span>
+            }
+<span class="fc" id="L229">        }</span>
+<span class="fc" id="L230">        requireShardCoverage(pathLocations, parsed, allServerUris);</span>
+<span class="fc" id="L231">    }</span>
+
+    private List&lt;FlightEndpoint&gt; joinEndpoints(String query,
+            Map&lt;String, FileAssignment&gt; pathLocations, Set&lt;String&gt; allServerUris,
+            boolean loadTracked)
+            throws IOException {
+<span class="nc" id="L237">        String allFilesServer = findServerWithAllFiles(pathLocations, allServerUris);</span>
+<span class="nc bnc" id="L238" title="All 2 branches missed.">        if (allFilesServer == null) {</span>
+<span class="nc" id="L239">            throw new IOException(</span>
+                    &quot;Server-side joins require all input shards on one Flight node; &quot;
+                            + &quot;Spark must execute this distributed join&quot;);
+        }
+<span class="nc" id="L243">        long addedBytes = pathLocations.values().stream()</span>
+<span class="nc" id="L244">                .mapToLong(FileAssignment::size).sum();</span>
+<span class="nc" id="L245">        FlightEndpoint ep = createEndpoint(allFilesServer,</span>
+<span class="nc" id="L246">                new ArrayList&lt;&gt;(pathLocations.keySet()), query, addedBytes, loadTracked);</span>
+<span class="nc bnc" id="L247" title="All 2 branches missed.">        if (loadTracked) {</span>
+<span class="nc" id="L248">            clusterService.addLoad(allFilesServer, addedBytes);</span>
+        }
+<span class="nc" id="L250">        return List.of(ep);</span>
+    }
+
+    private List&lt;FlightEndpoint&gt; distributeEndpoints(String query,
+            Map&lt;String, FileAssignment&gt; pathLocations, Map&lt;String, Long&gt; serverLoad,
+            boolean loadTracked) {
+<span class="fc" id="L256">        Map&lt;String, List&lt;String&gt;&gt; serverToFiles = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L257">        Map&lt;String, Long&gt; serverAdditions = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L258" title="All 2 branches covered.">        for (Map.Entry&lt;String, FileAssignment&gt; entry : pathLocations.entrySet()) {</span>
+<span class="fc" id="L259">            FileAssignment fa = entry.getValue();</span>
+<span class="fc" id="L260">            String bestServer = pickServer(fa.hosts(), serverLoad);</span>
+<span class="fc" id="L261">            serverToFiles.computeIfAbsent(bestServer, k -&gt; new ArrayList&lt;&gt;()).add(entry.getKey());</span>
+<span class="fc" id="L262">            serverLoad.merge(bestServer, fa.size(), Long::sum);</span>
+<span class="fc" id="L263">            serverAdditions.merge(bestServer, fa.size(), Long::sum);</span>
+<span class="fc" id="L264">        }</span>
+
+<span class="fc" id="L266">        List&lt;FlightEndpoint&gt; endpoints = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L267" title="All 2 branches covered.">        for (Map.Entry&lt;String, List&lt;String&gt;&gt; entry : serverToFiles.entrySet()) {</span>
+<span class="fc" id="L268">            long addedBytes = serverAdditions.getOrDefault(entry.getKey(), 0L);</span>
+<span class="fc" id="L269">            endpoints.add(createEndpoint(entry.getKey(), entry.getValue(),</span>
+                    query, addedBytes, loadTracked));
+<span class="pc bpc" id="L271" title="1 of 2 branches missed.">            if (loadTracked) {</span>
+<span class="nc" id="L272">                clusterService.addLoad(entry.getKey(), addedBytes);</span>
+            }
+<span class="fc" id="L274">        }</span>
+<span class="fc" id="L275">        return endpoints;</span>
+    }
+
+    /**
+     * Builds a stable cache key from the tables referenced by a query.
+     *
+     * @param parsed parsed SQL query
+     * @return normalized source-table key
+     */
+    private static String sourceCacheKey(ParquetQueryParser parsed) {
+<span class="pc bpc" id="L285" title="1 of 2 branches missed.">        if (!parsed.isJoin) {</span>
+<span class="fc" id="L286">            return normalizedTable(parsed.schema, parsed.table);</span>
+        }
+<span class="nc" id="L288">        return parsed.joinTables.stream()</span>
+<span class="nc" id="L289">                .map(table -&gt; normalizedTable(table.schema(), table.table()))</span>
+<span class="nc" id="L290">                .sorted()</span>
+<span class="nc" id="L291">                .collect(Collectors.joining(&quot;|&quot;));</span>
+    }
+
+    /**
+     * Normalizes a schema and table name for metadata caching.
+     *
+     * @param schema schema name
+     * @param table table name
+     * @return normalized qualified table name
+     */
+    private static String normalizedTable(String schema, String table) {
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">        return ((schema == null ? &quot;&quot; : schema) + &quot;.&quot; + table)</span>
+<span class="fc" id="L303">                .toLowerCase(Locale.ROOT);</span>
+    }
+
+    /**
+     * Checks whether any shard can be assigned to more than one live server.
+     *
+     * @param files file assignments
+     * @param liveServers live server URIs
+     * @return true when distributed load tracking can affect placement
+     */
+    private static boolean hasReplicatedFiles(
+            Map&lt;String, FileAssignment&gt; files, Set&lt;String&gt; liveServers) {
+<span class="fc" id="L315">        return files.values().stream().anyMatch(file -&gt;</span>
+<span class="pc bpc" id="L316" title="1 of 2 branches missed.">                file.hosts().stream().filter(liveServers::contains).limit(2).count() &gt; 1);</span>
+    }
+
+    private static Map&lt;String, FileAssignment&gt; filterForQuery(
+            Map&lt;String, FileAssignment&gt; inventory, ParquetQueryParser query) {
+<span class="fc" id="L321">        Map&lt;String, FileAssignment&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L322" title="All 2 branches covered.">        for (Map.Entry&lt;String, FileAssignment&gt; file : inventory.entrySet()) {</span>
+            boolean matches;
+<span class="fc bfc" id="L324" title="All 2 branches covered.">            if (query.isJoin) {</span>
+<span class="fc" id="L325">                matches = query.joinTables.stream().anyMatch(table -&gt;</span>
+<span class="fc" id="L326">                        belongsToTable(file.getKey(), table.schema(), table.table()));</span>
+            } else {
+<span class="fc" id="L328">                matches = belongsToTable(file.getKey(), query.schema, query.table);</span>
+            }
+<span class="fc bfc" id="L330" title="All 2 branches covered.">            if (matches) {</span>
+<span class="fc" id="L331">                result.put(file.getKey(), file.getValue());</span>
+            }
+<span class="fc" id="L333">        }</span>
+<span class="fc" id="L334">        return result;</span>
+    }
+
+    private static boolean belongsToTable(String path, String schema, String table) {
+<span class="fc" id="L338">        String normalized = path.replace('\\', '/');</span>
+<span class="pc bpc" id="L339" title="1 of 4 branches missed.">        if (schema == null || schema.isEmpty()) {</span>
+<span class="fc" id="L340">            String parent = extractTableFromPath(normalized);</span>
+<span class="pc bpc" id="L341" title="1 of 2 branches missed.">            return parent.equalsIgnoreCase(table)</span>
+<span class="fc bfc" id="L342" title="All 2 branches covered.">                    || parent.toLowerCase().endsWith(&quot;.&quot; + table.toLowerCase());</span>
+        }
+<span class="fc" id="L344">        String prefix = schema + &quot;/&quot; + table + &quot;/&quot;;</span>
+<span class="fc" id="L345">        return normalized.regionMatches(true, 0, prefix, 0, prefix.length());</span>
+    }
+
+    /**
+     * The benchmark generator writes one shard (possibly empty) for every table
+     * on every configured node. Requiring that coverage prevents an empty or
+     * incomplete inventory from being mistaken for a complete distributed table.
+     */
+    private static void requireShardCoverage(Map&lt;String, FileAssignment&gt; files,
+            ParquetQueryParser query, Set&lt;String&gt; liveServers) throws IOException {
+<span class="fc bfc" id="L355" title="All 2 branches covered.">        for (String server : liveServers) {</span>
+<span class="pc bpc" id="L356" title="1 of 2 branches missed.">            if (query.isJoin) {</span>
+<span class="nc bnc" id="L357" title="All 2 branches missed.">                for (ParquetQueryParser.JoinTable table : query.joinTables) {</span>
+<span class="nc bnc" id="L358" title="All 2 branches missed.">                    if (!ownsTableShard(files, server, table.schema(), table.table())) {</span>
+<span class="nc" id="L359">                        throw new IOException(&quot;Flight node &quot; + server</span>
+<span class="nc" id="L360">                                + &quot; has no shard for required table &quot; + table.table());</span>
+                    }
+<span class="nc" id="L362">                }</span>
+<span class="pc bpc" id="L363" title="1 of 2 branches missed.">            } else if (!ownsTableShard(files, server, query.schema, query.table)) {</span>
+<span class="nc" id="L364">                throw new IOException(&quot;Flight node &quot; + server</span>
+                        + &quot; has no shard for required table &quot; + query.table);
+            }
+<span class="fc" id="L367">        }</span>
+<span class="fc" id="L368">    }</span>
+
+    private static boolean ownsTableShard(Map&lt;String, FileAssignment&gt; files,
+            String server, String schema, String table) {
+<span class="fc" id="L372">        return files.entrySet().stream().anyMatch(file -&gt;</span>
+<span class="fc bfc" id="L373" title="All 2 branches covered.">                file.getValue().hosts().contains(server)</span>
+<span class="fc bfc" id="L374" title="All 2 branches covered.">                        &amp;&amp; belongsToTable(file.getKey(), schema, table));</span>
+    }
+
+    /**
+     * Creates a Flight endpoint for a set of files assigned to a server.
+     *
+     * @param serverUri target server URI
+     * @param filePaths file paths to stream
+     * @param query     SQL query
+     * @param bytes     estimated byte count for load tracking
+     * @return Flight endpoint
+     */
+    public FlightEndpoint createEndpoint(String serverUri, List&lt;String&gt; filePaths,
+            String query, long bytes) {
+<span class="fc" id="L388">        return createEndpoint(serverUri, filePaths, query, bytes, true);</span>
+    }
+
+    /**
+     * Creates a Flight endpoint with explicit distributed load accounting.
+     *
+     * @param serverUri target server URI
+     * @param filePaths file paths to stream
+     * @param query SQL query
+     * @param bytes estimated byte count
+     * @param loadTracked whether bytes were added to distributed server load
+     * @return Flight endpoint
+     */
+    private FlightEndpoint createEndpoint(String serverUri, List&lt;String&gt; filePaths,
+            String query, long bytes, boolean loadTracked) {
+<span class="fc" id="L403">        long t = LogUtil.mark();</span>
+<span class="fc" id="L404">        URI parsedUri = URI.create(serverUri);</span>
+        // Preserve the registered URI (including grpc+tls). Reconstructing every
+        // location as insecure both loses transport information and can cause the
+        // client to send a ticket to the wrong connection.
+<span class="fc" id="L408">        Location serverLoc = new Location(parsedUri);</span>
+<span class="fc" id="L409">        HandleState state = HandleState.forServerFiles(</span>
+<span class="fc" id="L410">                query, filePaths.toArray(new String[0]),</span>
+                serverUri, bytes, loadTracked);
+<span class="fc" id="L412">        ByteString serverHandle = ByteString.copyFrom(</span>
+<span class="fc" id="L413">                clusterService.createEndpointHandle(state));</span>
+<span class="fc" id="L414">        Ticket serverTicket = new Ticket(Any.pack(</span>
+<span class="fc" id="L415">                FlightSql.TicketStatementQuery.newBuilder()</span>
+<span class="fc" id="L416">                        .setStatementHandle(serverHandle).build())</span>
+<span class="fc" id="L417">                .toByteArray());</span>
+<span class="fc" id="L418">        LogUtil.logTiming(t, &quot;planning.createEndpoint&quot;, &quot;server=&quot; + serverUri + &quot; files=&quot; + filePaths.size() + &quot; bytes=&quot; + bytes);</span>
+<span class="fc" id="L419">        return new FlightEndpoint(serverTicket, serverLoc);</span>
+    }
+
+    /**
+     * Picks the best server for a set of file block hosts.
+     * Prefers local servers with smallest load; falls back to globally least-loaded.
+     *
+     * @param fileHosts  set of hosts that have the file blocks
+     * @param serverLoad current server loads
+     * @return selected server URI
+     */
+    public static String pickServer(Set&lt;String&gt; fileHosts, Map&lt;String, Long&gt; serverLoad) {
+<span class="fc" id="L431">        Set&lt;String&gt; normalizedFileHosts = fileHosts.stream()</span>
+<span class="fc" id="L432">                .map(HostUtils::normalize)</span>
+<span class="fc" id="L433">                .collect(Collectors.toSet());</span>
+
+<span class="fc" id="L435">        var localServers = serverLoad.keySet().stream()</span>
+<span class="fc" id="L436">                .filter(uri -&gt; normalizedFileHosts.contains(HostUtils.normalize(uri)))</span>
+<span class="fc" id="L437">                .toList();</span>
+
+<span class="fc bfc" id="L439" title="All 4 branches covered.">        boolean hasLocality = !localServers.isEmpty() &amp;&amp; localServers.size() &lt; serverLoad.size();</span>
+<span class="fc bfc" id="L440" title="All 2 branches covered.">        var candidates = hasLocality ? localServers : List.copyOf(serverLoad.keySet());</span>
+<span class="fc" id="L441">        return candidates.stream()</span>
+<span class="fc" id="L442">                .min(Comparator.comparingLong(serverLoad::get))</span>
+<span class="fc" id="L443">                .orElseThrow();</span>
+    }
+
+    /**
+     * Groups files by their assigned server based on data locality and load.
+     *
+     * @param pathLocations file to host assignments
+     * @param serverLoad    current server loads
+     * @return map of server URI to list of file paths
+     */
+    public static Map&lt;String, List&lt;String&gt;&gt; groupFilesByServer(
+            Map&lt;String, FileAssignment&gt; pathLocations, Map&lt;String, Long&gt; serverLoad) {
+<span class="fc" id="L455">        Map&lt;String, List&lt;String&gt;&gt; serverToFiles = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L456" title="All 2 branches covered.">        for (Map.Entry&lt;String, FileAssignment&gt; entry : pathLocations.entrySet()) {</span>
+<span class="fc" id="L457">            String serverUri = pickServer(entry.getValue().hosts(), serverLoad);</span>
+<span class="fc" id="L458">            serverToFiles.computeIfAbsent(serverUri, k -&gt; new ArrayList&lt;&gt;()).add(entry.getKey());</span>
+<span class="fc" id="L459">        }</span>
+<span class="fc" id="L460">        return serverToFiles;</span>
+    }
+
+    /**
+     * Finds a server that has ALL files in the map, or null if none.
+     *
+     * @param pathLocations file to host assignments
+     * @param allServerUris all registered server URIs
+     * @return server URI with all files, or null
+     */
+    private String findServerWithAllFiles(
+            Map&lt;String, FileAssignment&gt; pathLocations, Set&lt;String&gt; allServerUris) {
+        outer:
+<span class="nc bnc" id="L473" title="All 2 branches missed.">        for (String serverUri : allServerUris) {</span>
+<span class="nc" id="L474">            String normServer = HostUtils.normalize(serverUri);</span>
+<span class="nc bnc" id="L475" title="All 2 branches missed.">            for (FileAssignment fa : pathLocations.values()) {</span>
+<span class="nc" id="L476">                boolean hasHost = false;</span>
+<span class="nc bnc" id="L477" title="All 2 branches missed.">                for (String host : fa.hosts()) {</span>
+<span class="nc bnc" id="L478" title="All 2 branches missed.">                    if (HostUtils.normalize(host).equals(normServer)) {</span>
+<span class="nc" id="L479">                        hasHost = true;</span>
+<span class="nc" id="L480">                        break;</span>
+                    }
+<span class="nc" id="L482">                }</span>
+<span class="nc bnc" id="L483" title="All 2 branches missed.">                if (!hasHost) {</span>
+<span class="nc" id="L484">                    continue outer;</span>
+                }
+<span class="nc" id="L486">            }</span>
+<span class="nc" id="L487">            return serverUri;</span>
+        }
+<span class="nc" id="L489">        return null;</span>
+    }
+
+    /**
+     * Extracts the table name from a relative file path.
+     *
+     * @param path relative file path
+     * @return table name derived from parent directory
+     */
+    public static String extractTableFromPath(String path) {
+<span class="fc" id="L499">        int lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));</span>
+<span class="pc bpc" id="L500" title="1 of 2 branches missed.">        if (lastSep &lt; 0) {</span>
+<span class="nc" id="L501">            return path;</span>
+        }
+<span class="fc" id="L503">        String parent = path.substring(0, lastSep);</span>
+<span class="fc" id="L504">        return parent.replace('\\', '.').replace('/', '.');</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

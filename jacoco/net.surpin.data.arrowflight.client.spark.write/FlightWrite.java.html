@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightWrite.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.write</a> &gt; <span class="el_source">FlightWrite.java</span></div><h1>FlightWrite.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.write;
+
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.model.Table;
+import net.surpin.data.arrowflight.client.write.WriteBehavior;
+import org.apache.spark.sql.connector.write.*;
+import org.apache.spark.sql.connector.write.streaming.StreamingDataWriterFactory;
+import org.apache.spark.sql.connector.write.streaming.StreamingWrite;
+import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Arrays;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+
+/**
+ * Defines how to write data to target flight-service
+ */
+public class FlightWrite implements Write, BatchWrite, StreamingWrite {
+<span class="nc" id="L20">    private final Logger logger = LoggerFactory.getLogger(this.getClass());</span>
+
+    private final Configuration configuration;
+    private final Table table;
+    private final StructType dataSchema;
+    private final WriteBehavior writeBehavior;
+
+    /**
+     * Construct a flight-write
+     * @param configuration - the configuration of remote flight service
+     * @param table - the table object for describing the target flight table
+     * @param dataSchema - the schema of data being written
+     * @param writeBehavior - the write-behavior
+     */
+<span class="nc" id="L34">    public FlightWrite(Configuration configuration, Table table, StructType dataSchema, WriteBehavior writeBehavior) {</span>
+<span class="nc" id="L35">        this.configuration = configuration;</span>
+<span class="nc" id="L36">        this.table = table;</span>
+<span class="nc" id="L37">        this.dataSchema = dataSchema;</span>
+<span class="nc" id="L38">        this.writeBehavior = writeBehavior;</span>
+<span class="nc" id="L39">    }</span>
+
+    @Override
+    public boolean useCommitCoordinator() {
+<span class="nc" id="L43">        return true;</span>
+    }
+
+    @Override
+    public BatchWrite toBatch() {
+<span class="nc" id="L48">        return this;</span>
+    }
+
+    @Override
+    public StreamingWrite toStreaming() {
+<span class="nc" id="L53">        return this;</span>
+    }
+
+    @Override
+    public DataWriterFactory createBatchWriterFactory(PhysicalWriteInfo physicalWriteInfo) {
+<span class="nc" id="L58">        return new FlightDataWriterFactory(this.configuration, this.table, this.dataSchema, this.writeBehavior);</span>
+    }
+
+    @Override
+    public void onDataWriterCommit(WriterCommitMessage message) {
+<span class="nc" id="L63">        BatchWrite.super.onDataWriterCommit(message);</span>
+<span class="nc" id="L64">    }</span>
+
+    @Override
+    public void commit(WriterCommitMessage[] messages) {
+<span class="nc bnc" id="L68" title="All 2 branches missed.">        if (this.logger.isDebugEnabled()) {</span>
+<span class="nc" id="L69">            this.logger.info(this.concat.apply(messages));</span>
+        }
+<span class="nc" id="L71">    }</span>
+
+    @Override
+    public void abort(WriterCommitMessage[] messages) {
+<span class="nc" id="L75">        this.logger.error(this.concat.apply(messages));</span>
+<span class="nc" id="L76">    }</span>
+
+    @Override
+    public StreamingDataWriterFactory createStreamingWriterFactory(PhysicalWriteInfo var1) {
+<span class="nc" id="L80">        return new FlightDataWriterFactory(this.configuration, this.table, this.dataSchema, this.writeBehavior);</span>
+    }
+
+    @Override
+    public void commit(long epochId, WriterCommitMessage[] messages) {
+<span class="nc bnc" id="L85" title="All 2 branches missed.">        if (this.logger.isDebugEnabled()) {</span>
+<span class="nc" id="L86">            this.logger.info(this.concat.apply(this.adapt.apply(epochId, messages)));</span>
+        }
+<span class="nc" id="L88">    }</span>
+
+    @Override
+    public void abort(long epochId, WriterCommitMessage[] messages) {
+<span class="nc" id="L92">        this.logger.error(this.concat.apply(this.adapt.apply(epochId, messages)));</span>
+<span class="nc" id="L93">    }</span>
+
+    //concatenate all commit messages
+<span class="nc" id="L96">    private final Function&lt;WriterCommitMessage[], String&gt; concat = (messages) -&gt; {</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">        String[] details = Arrays.stream(messages).map(message -&gt; (message instanceof FlightWriterCommitMessage) ? ((FlightWriterCommitMessage) message).getMessage() : &quot;&quot;).toArray(String[]::new);</span>
+<span class="nc" id="L98">        return String.join(System.lineSeparator(), details);</span>
+    };
+    //adapt all commit messages
+<span class="nc bnc" id="L101" title="All 2 branches missed.">    private final BiFunction&lt;Long, WriterCommitMessage[], WriterCommitMessage[]&gt; adapt = (epochId, messages) -&gt; Arrays.stream(messages).map(message -&gt; (message instanceof FlightWriterCommitMessage) ? new FlightWriterCommitMessage((FlightWriterCommitMessage) message, epochId) : message).toArray(WriterCommitMessage[]::new);</span>
+}
+
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

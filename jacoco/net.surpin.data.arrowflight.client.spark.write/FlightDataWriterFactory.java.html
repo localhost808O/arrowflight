@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlightDataWriterFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.spark.write</a> &gt; <span class="el_source">FlightDataWriterFactory.java</span></div><h1>FlightDataWriterFactory.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.spark.write;
+
+import net.surpin.data.arrowflight.client.Client;
+import net.surpin.data.arrowflight.client.write.WriteProtocol;
+import net.surpin.data.arrowflight.client.Configuration;
+import net.surpin.data.arrowflight.client.model.Table;
+import net.surpin.data.arrowflight.client.write.WriteBehavior;
+import net.surpin.data.arrowflight.client.write.WriteStatement;
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.connector.write.DataWriter;
+import org.apache.spark.sql.connector.write.DataWriterFactory;
+import org.apache.spark.sql.connector.write.streaming.StreamingDataWriterFactory;
+import org.apache.spark.sql.types.StructType;
+import org.slf4j.LoggerFactory;
+import java.util.Arrays;
+
+/**
+ * Defines the FLightDataWriterFactory to create DataWriters
+ */
+public final class FlightDataWriterFactory implements DataWriterFactory, StreamingDataWriterFactory {
+    private final Configuration configuration;
+
+    private final WriteStatement stmt;
+    private final WriteProtocol protocol;
+    private final int batchSize;
+
+    /**
+     * Construct a flight-write
+     * @param configuration - the configuration of remote flight service
+     * @param table - the table object for describing the target flight table
+     * @param dataSchema - the schema of data being written
+     * @param writeBehavior - the write-behavior
+     */
+<span class="nc" id="L34">    public FlightDataWriterFactory(Configuration configuration, Table table, StructType dataSchema, WriteBehavior writeBehavior) {</span>
+<span class="nc" id="L35">        this.configuration = configuration;</span>
+<span class="nc bnc" id="L36" title="All 4 branches missed.">        this.stmt = (writeBehavior.getMergeByColumns() == null || writeBehavior.getMergeByColumns().length == 0)</span>
+<span class="nc" id="L37">            ? new WriteStatement(table.getName(), dataSchema, table.getSchema(), table.getColumnQuote(), writeBehavior.getTypeMapping())</span>
+<span class="nc" id="L38">            : new WriteStatement(table.getName(), writeBehavior.getMergeByColumns(), dataSchema, table.getSchema(), table.getColumnQuote(), writeBehavior.getTypeMapping());</span>
+<span class="nc" id="L39">        this.protocol = writeBehavior.getProtocol();</span>
+<span class="nc" id="L40">        this.batchSize = writeBehavior.getBatchSize();</span>
+
+        //truncate the table if requested
+<span class="nc bnc" id="L43" title="All 2 branches missed.">        if (writeBehavior.isTruncate()) {</span>
+<span class="nc" id="L44">            this.truncate(table.getName());</span>
+        }
+<span class="nc" id="L46">    }</span>
+
+    /**
+     * truncate the target table
+     * @param table - the name of the table
+     */
+    private void truncate(String table) {
+        try {
+<span class="nc" id="L54">            Client.getOrCreate(this.configuration).truncate(table);</span>
+<span class="nc" id="L55">        } catch (Exception e) {</span>
+<span class="nc" id="L56">            LoggerFactory.getLogger(this.getClass()).error(e.getMessage() + &quot; --&gt; &quot; + Arrays.toString(e.getStackTrace()));</span>
+<span class="nc" id="L57">            throw new RuntimeException(e);</span>
+<span class="nc" id="L58">        }</span>
+<span class="nc" id="L59">    }</span>
+
+    /**
+     * Create a DataWriter for batch-write
+     * @param partitionId - the partition id
+     * @param taskId - the task id
+     * @return - a DataWriter
+     */
+    @Override
+    public DataWriter&lt;InternalRow&gt; createWriter(int partitionId, long taskId) {
+<span class="nc" id="L69">        return new FlightDataWriter(partitionId, taskId, this.configuration, this.stmt, this.protocol, this.batchSize);</span>
+    }
+
+    /**
+     * Create a DataWriter for streaming-write
+     * @param partitionId - the partition id
+     * @param taskId - the task id
+     * @param epochId - a monotonically increasing id for streaming queries that are split into discrete periods of execution.
+     * @return - a DataWriter
+     */
+    @Override
+    public DataWriter&lt;InternalRow&gt; createWriter(int partitionId, long taskId, long epochId) {
+<span class="nc" id="L81">        return new FlightDataWriter(partitionId, taskId, epochId, this.configuration, this.stmt, this.protocol, this.batchSize);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

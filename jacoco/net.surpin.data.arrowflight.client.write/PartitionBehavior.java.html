@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PartitionBehavior.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.client.write</a> &gt; <span class="el_source">PartitionBehavior.java</span></div><h1>PartitionBehavior.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.client.write;
+
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.DecimalType;
+import org.apache.spark.sql.types.StructField;
+import org.joda.time.DateTime;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.IntStream;
+
+/**
+ * Describes the partition behavior. If the data type of by-column is numberic or date-time, and lower-bound and upper-bound are specified, the
+ * partitioning step is calculated upon partition size. Otherwise, hash-partitioning will be used.
+ */
+public class PartitionBehavior implements Serializable {
+    /**
+     * Internal bound for organizing predicates
+     */
+    private static class Bound implements Serializable {
+        private final double lower;
+        private final double upper;
+
+        /**
+         * Construct Bound with lower and upper values
+         * @param lower lower bound
+         * @param upper upper bound
+         */
+<span class="fc" id="L33">        Bound(double lower, double upper) {</span>
+<span class="fc" id="L34">            this.lower = lower;</span>
+<span class="fc" id="L35">            this.upper = upper;</span>
+<span class="fc" id="L36">        }</span>
+
+        /**
+         * Build predicate with long bounds
+         * @param name column name
+         * @return predicate string
+         */
+        public String toLongPredicate(String name) {
+<span class="fc" id="L44">            return toPredicate(name, Long.toString((long) this.lower), Long.toString((long) this.upper));</span>
+        }
+
+        /**
+         * Build predicate with double bounds
+         * @param name column name
+         * @return predicate string
+         */
+        public String toDoublePredicate(String name) {
+<span class="fc" id="L53">            return toPredicate(name, Double.toString(this.lower), Double.toString(this.upper));</span>
+        }
+
+        /**
+         * Build predicate with datetime bounds
+         * @param name column name
+         * @param dtFormat datetime formatter
+         * @return predicate string
+         */
+        public String toDateTimePredicate(String name, DateTimeFormatter dtFormat) {
+<span class="fc" id="L63">            return toPredicate(name, String.format(&quot;'%s'&quot;, dtFormat.print(new DateTime((long) this.lower))), String.format(&quot;'%s'&quot;, dtFormat.print(new DateTime((long) this.upper))));</span>
+        }
+
+        /**
+         * Build predicate string from bounds
+         * @param name column name
+         * @param lower lower bound string
+         * @param upper upper bound string
+         * @return predicate string
+         */
+        private String toPredicate(String name, String lower, String upper) {
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">            return !lower.equalsIgnoreCase(upper) ? String.format(&quot;%s &lt;= %s and %s &lt; %s&quot;, lower, name, name, upper) : String.format(&quot;%s = %s&quot;, name, lower);</span>
+        }
+    }
+
+    //the name of hash-func in remote flight service
+    private final String hashFunc;
+    //the name of partition-by column
+    private final String byColumn;
+    //the number of partitions
+    private final int size;
+    //the lower bound
+    private final String lowerBound;
+    //the upper bound
+    private final String upperBound;
+
+    //explicit predicates
+    private final String[] predicates;
+
+    /**
+     * Construct a partition behavior
+     * @param hashFunc - the name of the hash-func
+     * @param byColumn - the column used for partitioning
+     * @param size - the partition size
+     * @param lowerBound - the lower bound used for partitioning
+     * @param upperBound - the upper bound used for partitioning
+     * @param predicates - the explicit predicates
+     */
+<span class="fc" id="L101">    public PartitionBehavior(String hashFunc, String byColumn, int size, String lowerBound, String upperBound, String[] predicates) {</span>
+<span class="fc" id="L102">        this.hashFunc = hashFunc;</span>
+<span class="fc" id="L103">        this.byColumn = byColumn;</span>
+<span class="fc" id="L104">        this.size = size;</span>
+<span class="fc" id="L105">        this.lowerBound = lowerBound;</span>
+<span class="fc" id="L106">        this.upperBound = upperBound;</span>
+
+<span class="fc" id="L108">        this.predicates = predicates;</span>
+<span class="fc" id="L109">    }</span>
+
+    /**
+     * Get the by-column
+     * @return - the name of the column used for partitioning
+     */
+    public String getByColumn() {
+<span class="fc" id="L116">        return this.byColumn;</span>
+    }
+
+    /**
+     * Get the predicates
+     * @return - the collection of predicates for partitioning
+     */
+    public String[] getPredicates() {
+<span class="fc" id="L124">        return this.predicates;</span>
+    }
+
+    /**
+     * Calculate the predicates upon by-column, size, lower-bound &amp; upper-bound
+     * @param dataFields - The fields from the select-list. The column for partitioning may or may not on the select-list.
+     * @return - the predicates which partitions the rows
+     */
+    public String[] calculatePredicates(StructField[] dataFields) {
+<span class="fc" id="L133">        String[] predicates = null;</span>
+<span class="pc bpc" id="L134" title="4 of 10 branches missed.">        if (this.lowerBound != null &amp;&amp; this.lowerBound.length() &gt; 0 &amp;&amp; this.upperBound != null &amp;&amp; this.upperBound.length() &gt; 0 &amp;&amp; dataFields != null) {</span>
+<span class="fc" id="L135">            StructField partitionColumn = Arrays.stream(dataFields).filter(field -&gt; field.name().equalsIgnoreCase(this.byColumn)).findFirst().orElse(null);</span>
+<span class="fc bfc" id="L136" title="All 2 branches covered.">            if (partitionColumn != null) {</span>
+<span class="fc" id="L137">                DataType dataType = partitionColumn.dataType();</span>
+<span class="pc bpc" id="L138" title="2 of 8 branches missed.">                if (dataType.equals(DataTypes.ByteType) || dataType.equals(DataTypes.ShortType) || dataType.equals(DataTypes.IntegerType) || dataType.equals(DataTypes.LongType)) {</span>
+<span class="fc" id="L139">                    predicates = probeLongPredicates().orElse(probeDoublePredicates().orElse(null));</span>
+<span class="pc bpc" id="L140" title="2 of 6 branches missed.">                } else if (dataType.equals(DataTypes.FloatType) || dataType.equals(DataTypes.DoubleType) || dataType instanceof DecimalType) {</span>
+<span class="fc" id="L141">                    predicates = probeDoublePredicates().orElse(null);</span>
+<span class="pc bpc" id="L142" title="3 of 4 branches missed.">                } else if (dataType.equals(DataTypes.DateType) || dataType.equals(DataTypes.TimestampType)) {</span>
+<span class="fc" id="L143">                    predicates = probeDateTimePredicates().orElse(null);</span>
+                }
+            }
+        }
+<span class="fc bfc" id="L147" title="All 2 branches covered.">        if (predicates == null) {</span>
+            //by default, hash-partitioning is applied
+<span class="fc" id="L149">            Function&lt;Integer, String&gt; hashPredicate = (idx) -&gt; String.format(&quot;(%s(%s) %% %d + %d) %% %d = %d&quot;, this.hashFunc, this.byColumn, this.size, this.size, this.size, idx);</span>
+<span class="fc" id="L150">            predicates = IntStream.range(0, this.size).mapToObj(hashPredicate::apply).toArray(String[]::new);</span>
+        }
+<span class="fc" id="L152">        return predicates;</span>
+    }
+
+    /**
+     * Probe predicates using long bounds
+     * @return optional array of predicates
+     */
+    private Optional&lt;String[]&gt; probeLongPredicates() {
+        try {
+<span class="fc" id="L161">            long lower = Long.parseLong(this.lowerBound.replace(&quot;,&quot;, &quot;&quot;));</span>
+<span class="fc" id="L162">            long upper = Long.parseLong(this.upperBound.replace(&quot;,&quot;, &quot;&quot;));</span>
+<span class="fc" id="L163">            double step = (double) (upper - lower) / (double) this.size;</span>
+<span class="fc" id="L164">            return Optional.of(IntStream.range(0, this.size).mapToObj(i -&gt; new Bound(lower + i * step, lower + (i + 1) * step)).map(b -&gt; b.toLongPredicate(this.byColumn)).toArray(String[]::new));</span>
+<span class="nc" id="L165">        } catch (Exception e) {</span>
+<span class="nc" id="L166">            return Optional.empty();</span>
+        }
+    }
+    /**
+     * Probe predicates using double bounds
+     * @return optional array of predicates
+     */
+    private Optional&lt;String[]&gt; probeDoublePredicates() {
+        try {
+<span class="fc" id="L175">            double lower = Double.parseDouble(this.lowerBound.replace(&quot;,&quot;, &quot;&quot;));</span>
+<span class="fc" id="L176">            double upper = Double.parseDouble(this.upperBound.replace(&quot;,&quot;, &quot;&quot;));</span>
+<span class="fc" id="L177">            double step = (upper - lower) / (double) this.size;</span>
+<span class="fc" id="L178">            return Optional.of(IntStream.range(0, this.size).mapToObj(i -&gt; new Bound(lower + i * step, lower + (i + 1) * step)).map(b -&gt; b.toDoublePredicate(this.byColumn)).toArray(String[]::new));</span>
+<span class="nc" id="L179">        } catch (Exception e) {</span>
+<span class="nc" id="L180">            return Optional.empty();</span>
+        }
+    }
+    /**
+     * Probe predicates using datetime bounds with multiple format attempts
+     * @return optional array of predicates
+     */
+    private Optional&lt;String[]&gt; probeDateTimePredicates() {
+<span class="fc" id="L188">        String[] dtFormats = new String[] {</span>
+            &quot;yyyy-MM-dd HH:mm:ss&quot;, &quot;yyyy/MM/dd HH:mm:ss&quot;, &quot;MM/dd/yyyy HH:mm:ss&quot;, &quot;dd/MM/yyyy HH:mm:ss&quot;,
+            &quot;yyyy-MM-dd'T'HH:mm:ss.SSSZ&quot;, &quot;yyyy.MM.dd HH:mm:ss&quot;, &quot;yyyyMMdd HH:mm:ss&quot;,
+            &quot;yyyy-MM-dd&quot;, &quot;yyyy/MM/d&quot;, &quot;MM/dd/yyyy&quot;, &quot;dd/MM/yyyy&quot;, &quot;yyyyMMdd&quot;
+        };
+<span class="fc" id="L193">        Optional&lt;String[]&gt; predicates = Optional.empty();</span>
+<span class="pc bpc" id="L194" title="1 of 4 branches missed.">        for (int i = 0; i &lt; dtFormats.length &amp;&amp; !predicates.isPresent(); i++) {</span>
+<span class="fc" id="L195">            predicates = tryDateTimePredicates(DateTimeFormat.forPattern(dtFormats[i]));</span>
+        }
+<span class="fc" id="L197">        return predicates;</span>
+    }
+    /**
+     * Try building predicates with given datetime format
+     * @param dtFormat datetime formatter
+     * @return optional array of predicates
+     */
+    private Optional&lt;String[]&gt; tryDateTimePredicates(DateTimeFormatter dtFormat) {
+        try {
+<span class="fc" id="L206">            long lower = DateTime.parse(this.lowerBound, dtFormat).getMillis();</span>
+<span class="fc" id="L207">            long upper = DateTime.parse(this.upperBound, dtFormat).getMillis();</span>
+<span class="fc" id="L208">            double step = (double) (upper - lower) / (double) this.size;</span>
+<span class="fc" id="L209">            return Optional.of(IntStream.range(0, this.size).mapToObj(i -&gt; new Bound(lower + i * step, lower + (i + 1) * step)).map(b -&gt; b.toDateTimePredicate(this.byColumn, dtFormat)).toArray(String[]::new));</span>
+<span class="fc" id="L210">        } catch (Exception e) {</span>
+<span class="fc" id="L211">            return Optional.empty();</span>
+        }
+    }
+
+    /**
+     * Check if the behavior is defined for partitioning
+     * @return - true when partitioning is defined
+     */
+    public Boolean enabled() {
+<span class="pc bpc" id="L220" title="2 of 8 branches missed.">        return ((this.byColumn != null &amp;&amp; this.byColumn.length() &gt; 0) || (this.predicates != null &amp;&amp; this.predicates.length &gt; 0));</span>
+    }
+
+    /**
+     * Flg to indicate whether pre-defined predicates have been given
+     * @return - true if partition predicates provided
+     */
+    public Boolean predicateDefined() {
+<span class="pc bpc" id="L228" title="1 of 4 branches missed.">        return (this.predicates != null &amp;&amp; this.predicates.length &gt; 0);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

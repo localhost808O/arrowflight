@@ -1,0 +1,319 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SchemaConverter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">Hadoop Arrow Flight SQL Server</a> &gt; <a href="index.source.html" class="el_package">net.surpin.data.arrowflight.server.adapters</a> &gt; <span class="el_source">SchemaConverter.java</span></div><h1>SchemaConverter.java</h1><pre class="source lang-java linenums">package net.surpin.data.arrowflight.server.adapters;
+
+import org.apache.arrow.vector.types.DateUnit;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.IntervalUnit;
+import org.apache.arrow.vector.types.TimeUnit;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.OriginalType;
+import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Type;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.sql.DatabaseMetaData;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Predicate;
+
+/**
+ * Converts Parquet schemas to Arrow schemas.
+ * Handles all logical types (Decimal, Timestamp, Date, etc.) and primitive types.
+ */
+public final class SchemaConverter {
+
+<span class="fc" id="L36">    private static final Logger LOGGER = LoggerFactory.getLogger(SchemaConverter.class);</span>
+
+    /**
+     * Utility class, no instantiation.
+     */
+    private SchemaConverter() {
+    }
+
+    /**
+     * Converts a Parquet column descriptor to an Arrow field.
+     *
+     * @param columnDesc parquet column descriptor
+     * @return Arrow field
+     */
+    public static Field convert(ColumnDescriptor columnDesc) {
+<span class="fc" id="L51">        String name = String.join(&quot;.&quot;, columnDesc.getPath());</span>
+<span class="fc" id="L52">        Type parquetType = columnDesc.getPrimitiveType();</span>
+<span class="fc" id="L53">        return convert(name, parquetType);</span>
+    }
+
+    /**
+     * Converts a named Parquet type to an Arrow field.
+     * Handles structs, maps, lists, and all scalar types.
+     *
+     * @param path  field name
+     * @param type  parquet type
+     * @return Arrow field
+     */
+    @SuppressWarnings(&quot;java:S3776&quot;)
+    public static Field convert(String path, Type type) {
+<span class="fc bfc" id="L66" title="All 2 branches covered.">        boolean nullable = type.getRepetition() != Type.Repetition.REQUIRED;</span>
+
+<span class="fc bfc" id="L68" title="All 2 branches covered.">        if (type instanceof GroupType groupType) {</span>
+<span class="fc" id="L69">            List&lt;Field&gt; fields = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L70" title="All 2 branches covered.">            for (int i = 0; i &lt; groupType.getFieldCount(); i++) {</span>
+<span class="fc" id="L71">                fields.add(convert(groupType.getFieldName(i), groupType.getType(i)));</span>
+            }
+<span class="fc" id="L73">            return new Field(path, fieldType(nullable, new ArrowType.Struct()), fields);</span>
+        }
+
+<span class="fc" id="L76">        LogicalTypeAnnotation logicalType = type.getLogicalTypeAnnotation();</span>
+
+<span class="fc bfc" id="L78" title="All 2 branches covered.">        if (logicalType == null) {</span>
+<span class="fc" id="L79">            return convertPrimitive(path, type.asPrimitiveType(), nullable);</span>
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.MapLogicalTypeAnnotation) {</span>
+<span class="nc" id="L81">            return new Field(path, fieldType(nullable, new ArrowType.Map(false)), List.of());</span>
+<span class="pc bpc" id="L82" title="1 of 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.ListLogicalTypeAnnotation) {</span>
+<span class="nc" id="L83">            return new Field(path, fieldType(nullable, new ArrowType.List()), List.of());</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.StringLogicalTypeAnnotation) {</span>
+<span class="fc" id="L85">            return new Field(path, fieldType(nullable, new ArrowType.Utf8()), null);</span>
+<span class="pc bpc" id="L86" title="1 of 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.MapKeyValueTypeAnnotation) {</span>
+<span class="nc" id="L87">            throw new IllegalArgumentException(&quot;Unsupported parquet LogicalTypeAnnotation: &quot; + logicalType);</span>
+<span class="pc bpc" id="L88" title="1 of 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.EnumLogicalTypeAnnotation) {</span>
+<span class="nc" id="L89">            throw new IllegalArgumentException(&quot;Unsupported parquet LogicalTypeAnnotation: &quot; + logicalType);</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.DecimalLogicalTypeAnnotation decimal) {</span>
+<span class="fc" id="L91">            return new Field(path, fieldType(nullable, new ArrowType.Decimal(decimal.getPrecision(), decimal.getScale())), null);</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.DateLogicalTypeAnnotation) {</span>
+<span class="fc" id="L93">            return new Field(path, fieldType(nullable, new ArrowType.Date(DateUnit.DAY)), null);</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.TimeLogicalTypeAnnotation time) {</span>
+<span class="fc" id="L95">            TimeUnit unit = toArrowTimeUnit(time.getUnit());</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">            int bitWidth = (time.getUnit() == LogicalTypeAnnotation.TimeUnit.MILLIS) ? 32 : 64;</span>
+<span class="fc" id="L97">            return new Field(path, fieldType(nullable, new ArrowType.Time(unit, bitWidth)), null);</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.TimestampLogicalTypeAnnotation ts) {</span>
+<span class="fc" id="L99">            TimeUnit unit = toArrowTimeUnit(ts.getUnit());</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">            String timezone = ts.isAdjustedToUTC() ? &quot;UTC&quot; : null;</span>
+<span class="fc" id="L101">            return new Field(path, fieldType(nullable, new ArrowType.Timestamp(unit, timezone)), null);</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.IntLogicalTypeAnnotation integer) {</span>
+<span class="fc" id="L103">            return new Field(path, fieldType(nullable, new ArrowType.Int(integer.getBitWidth(), integer.isSigned())), null);</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">        } else if (logicalType instanceof LogicalTypeAnnotation.JsonLogicalTypeAnnotation) {</span>
+<span class="fc" id="L105">            return new Field(path, fieldType(nullable, new ArrowType.Utf8()), null);</span>
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.BsonLogicalTypeAnnotation) {</span>
+<span class="fc" id="L107">            return new Field(path, fieldType(nullable, new ArrowType.Binary()), null);</span>
+<span class="nc bnc" id="L108" title="All 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.UUIDLogicalTypeAnnotation) {</span>
+<span class="nc" id="L109">            return new Field(path, fieldType(nullable, new ArrowType.Utf8()), null);</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">        } else if (logicalType instanceof LogicalTypeAnnotation.IntervalLogicalTypeAnnotation) {</span>
+<span class="nc" id="L111">            return new Field(path, fieldType(nullable, new ArrowType.Interval(IntervalUnit.DAY_TIME)), null);</span>
+        } else {
+<span class="nc" id="L113">            throw new IllegalArgumentException(&quot;Unsupported parquet LogicalTypeAnnotation: &quot; + logicalType);</span>
+        }
+    }
+
+    /**
+     * Creates nullable or non-nullable FieldType.
+     *
+     * @param nullable  whether field is nullable
+     * @param arrowType Arrow type
+     * @return FieldType
+     */
+    private static FieldType fieldType(boolean nullable, ArrowType arrowType) {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">        return nullable ? FieldType.nullable(arrowType) : FieldType.notNullable(arrowType);</span>
+    }
+
+    /**
+     * Converts Parquet TimeUnit to Arrow TimeUnit.
+     *
+     * @param unit Parquet time unit
+     * @return Arrow time unit
+     */
+    private static TimeUnit toArrowTimeUnit(LogicalTypeAnnotation.TimeUnit unit) {
+<span class="fc bfc" id="L135" title="All 3 branches covered.">        return switch (unit) {</span>
+<span class="fc" id="L136">            case MILLIS -&gt; TimeUnit.MILLISECOND;</span>
+<span class="fc" id="L137">            case MICROS -&gt; TimeUnit.MICROSECOND;</span>
+<span class="fc" id="L138">            case NANOS -&gt; TimeUnit.NANOSECOND;</span>
+        };
+    }
+
+    /**
+     * Converts a primitive Parquet type to an Arrow field.
+     *
+     * @param path        field name
+     * @param parquetType Parquet primitive type
+     * @param nullable    whether field is nullable
+     * @return Arrow field
+     */
+    @SuppressWarnings(&quot;java:S3776&quot;)
+    private static Field convertPrimitive(String path, PrimitiveType parquetType, boolean nullable) {
+<span class="fc" id="L152">        OriginalType origType = parquetType.getOriginalType();</span>
+<span class="pc bpc" id="L153" title="1 of 2 branches missed.">        if (origType != null) {</span>
+<span class="nc bnc" id="L154" title="All 4 branches missed.">            switch (parquetType.getPrimitiveTypeName()) {</span>
+                case INT32:
+<span class="nc bnc" id="L156" title="All 7 branches missed.">                    switch (origType) {</span>
+<span class="nc" id="L157">                        case INT_8:   return new Field(path, fieldType(nullable, new ArrowType.Int(8,  true)),  null);</span>
+<span class="nc" id="L158">                        case INT_16:  return new Field(path, fieldType(nullable, new ArrowType.Int(16, true)),  null);</span>
+<span class="nc" id="L159">                        case UINT_8:  return new Field(path, fieldType(nullable, new ArrowType.Int(8,  false)), null);</span>
+<span class="nc" id="L160">                        case UINT_16: return new Field(path, fieldType(nullable, new ArrowType.Int(16, false)), null);</span>
+<span class="nc" id="L161">                        case DATE:    return new Field(path, fieldType(nullable, new ArrowType.Date(DateUnit.DAY)), null);</span>
+                        case DECIMAL: {
+<span class="nc" id="L163">                            org.apache.parquet.schema.DecimalMetadata dm = parquetType.getDecimalMetadata();</span>
+<span class="nc" id="L164">                            return new Field(path, fieldType(nullable, new ArrowType.Decimal(dm.getPrecision(), dm.getScale())), null);</span>
+                        }
+<span class="nc" id="L166">                        default: break;</span>
+                    }
+                    break;
+                case INT64:
+<span class="nc bnc" id="L170" title="All 5 branches missed.">                    switch (origType) {</span>
+<span class="nc" id="L171">                        case UINT_64:         return new Field(path, fieldType(nullable, new ArrowType.Int(64, false)), null);</span>
+<span class="nc" id="L172">                        case TIMESTAMP_MILLIS: return new Field(path, fieldType(nullable, new ArrowType.Timestamp(TimeUnit.MILLISECOND, null)), null);</span>
+<span class="nc" id="L173">                        case TIMESTAMP_MICROS: return new Field(path, fieldType(nullable, new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)), null);</span>
+                        case DECIMAL: {
+<span class="nc" id="L175">                            org.apache.parquet.schema.DecimalMetadata dm = parquetType.getDecimalMetadata();</span>
+<span class="nc" id="L176">                            return new Field(path, fieldType(nullable, new ArrowType.Decimal(dm.getPrecision(), dm.getScale())), null);</span>
+                        }
+<span class="nc" id="L178">                        default: break;</span>
+                    }
+                    break;
+                case BINARY:
+<span class="nc bnc" id="L182" title="All 6 branches missed.">                    if (origType == OriginalType.UTF8 || origType == OriginalType.ENUM || origType == OriginalType.JSON) {</span>
+<span class="nc" id="L183">                        return new Field(path, fieldType(nullable, new ArrowType.Utf8()), null);</span>
+                    }
+<span class="nc bnc" id="L185" title="All 2 branches missed.">                    if (origType == OriginalType.DECIMAL) {</span>
+<span class="nc" id="L186">                        org.apache.parquet.schema.DecimalMetadata dm = parquetType.getDecimalMetadata();</span>
+<span class="nc" id="L187">                        return new Field(path, fieldType(nullable, new ArrowType.Decimal(dm.getPrecision(), dm.getScale())), null);</span>
+                    }
+                    break;
+                default: break;
+            }
+        }
+
+<span class="pc bpc" id="L194" title="1 of 9 branches missed.">        switch (parquetType.getPrimitiveTypeName()) {</span>
+            case INT64:
+<span class="fc" id="L196">                return new Field(path, fieldType(nullable, new ArrowType.Int(64, true)), null);</span>
+            case INT32:
+<span class="fc" id="L198">                return new Field(path, fieldType(nullable, new ArrowType.Int(32, true)), null);</span>
+            case BOOLEAN:
+<span class="fc" id="L200">                return new Field(path, fieldType(nullable, new ArrowType.Bool()), null);</span>
+            case BINARY:
+<span class="fc" id="L202">                return new Field(path, fieldType(nullable, new ArrowType.Binary()), null);</span>
+            case FLOAT:
+<span class="fc" id="L204">                return new Field(path, fieldType(nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)), null);</span>
+            case DOUBLE:
+<span class="fc" id="L206">                return new Field(path, fieldType(nullable, new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)), null);</span>
+            case INT96:
+<span class="fc" id="L208">                return new Field(path, fieldType(nullable, new ArrowType.Timestamp(TimeUnit.NANOSECOND, null)), null);</span>
+            case FIXED_LEN_BYTE_ARRAY:
+<span class="fc" id="L210">                return new Field(path, fieldType(nullable, new ArrowType.FixedSizeBinary(parquetType.getTypeLength())), null);</span>
+            default:
+<span class="nc" id="L212">                throw new IllegalArgumentException(&quot;Unsupported parquet PrimitiveType: &quot; + parquetType);</span>
+        }
+    }
+
+    /**
+     * Converts a full Parquet message type to an Arrow schema.
+     *
+     * @param parquetSchema parquet schema
+     * @return Arrow schema
+     */
+    public static Schema convert(MessageType parquetSchema) {
+<span class="fc" id="L223">        return convert(parquetSchema, null);</span>
+    }
+
+    /**
+     * Converts a Parquet message type to an Arrow schema, optionally filtering columns.
+     *
+     * @param parquetSchema  parquet schema
+     * @param includeColumn  predicate to select columns, null for all
+     * @return Arrow schema
+     */
+    public static Schema convert(MessageType parquetSchema, Predicate&lt;ColumnDescriptor&gt; includeColumn) {
+<span class="fc" id="L234">        List&lt;Field&gt; fields = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L235" title="All 2 branches covered.">        for (ColumnDescriptor columnDescriptor : parquetSchema.getColumns()) {</span>
+<span class="fc bfc" id="L236" title="All 4 branches covered.">            if (includeColumn == null || includeColumn.test(columnDescriptor)) {</span>
+<span class="fc" id="L237">                fields.add(convert(columnDescriptor));</span>
+            }
+<span class="fc" id="L239">        }</span>
+<span class="fc" id="L240">        return new Schema(fields, null);</span>
+    }
+
+    /**
+     * Builds type info list for Flight SQL GetXdbcTypeInfo.
+     *
+     * @return list of type info entries
+     */
+    public static List&lt;TypeInfo&gt; buildTypeInfo() {
+<span class="fc" id="L249">        List&lt;TypeInfo&gt; types = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L250">        types.add(new TypeInfo(&quot;ARRAY&quot;, Types.ARRAY, null, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typePredNone, false, false, false, &quot;ARRAY&quot;, 0, 0, null, null, null));</span>
+<span class="fc" id="L251">        types.add(new TypeInfo(&quot;BIGINT&quot;, Types.BIGINT, 19, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;BIGINT&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L252">        types.add(new TypeInfo(&quot;BINARY&quot;, Types.BINARY, Integer.MAX_VALUE, null, null, &quot;length&quot;, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;BINARY&quot;, 0, 0, null, null, null));</span>
+<span class="fc" id="L253">        types.add(new TypeInfo(&quot;BOOLEAN&quot;, Types.BOOLEAN, 1, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;BOOLEAN&quot;, 0, 0, null, null, 2));</span>
+<span class="fc" id="L254">        types.add(new TypeInfo(&quot;DATE&quot;, Types.DATE, 10, &quot;'&quot;, &quot;'&quot;, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;DATE&quot;, 0, 0, null, null, null));</span>
+<span class="fc" id="L255">        types.add(new TypeInfo(&quot;DECIMAL&quot;, Types.DECIMAL, 38, null, null, &quot;precision, scale&quot;, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;DECIMAL&quot;, 0, 38, null, null, 10));</span>
+<span class="fc" id="L256">        types.add(new TypeInfo(&quot;DOUBLE&quot;, Types.DOUBLE, 15, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;DOUBLE&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L257">        types.add(new TypeInfo(&quot;INTEGER&quot;, Types.INTEGER, 10, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;INTEGER&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L258">        types.add(new TypeInfo(&quot;REAL&quot;, Types.REAL, 7, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;REAL&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L259">        types.add(new TypeInfo(&quot;SMALLINT&quot;, Types.SMALLINT, 5, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;SMALLINT&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L260">        types.add(new TypeInfo(&quot;STRUCT&quot;, Types.STRUCT, null, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typePredNone, false, false, false, &quot;STRUCT&quot;, 0, 0, null, null, null));</span>
+<span class="fc" id="L261">        types.add(new TypeInfo(&quot;TIME&quot;, Types.TIME, 15, &quot;'&quot;, &quot;'&quot;, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;TIME&quot;, 0, 6, null, null, null));</span>
+<span class="fc" id="L262">        types.add(new TypeInfo(&quot;TIMESTAMP&quot;, Types.TIMESTAMP, 26, &quot;'&quot;, &quot;'&quot;, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;TIMESTAMP&quot;, 0, 6, null, null, null));</span>
+<span class="fc" id="L263">        types.add(new TypeInfo(&quot;TINYINT&quot;, Types.TINYINT, 3, null, null, null, DatabaseMetaData.typeNullable, false, DatabaseMetaData.typeSearchable, false, false, false, &quot;TINYINT&quot;, 0, 0, null, null, 10));</span>
+<span class="fc" id="L264">        types.add(new TypeInfo(&quot;VARCHAR&quot;, Types.VARCHAR, Integer.MAX_VALUE, &quot;'&quot;, &quot;'&quot;, &quot;length&quot;, DatabaseMetaData.typeNullable, true, DatabaseMetaData.typeSearchable, false, false, false, &quot;VARCHAR&quot;, 0, 0, null, null, null));</span>
+<span class="fc" id="L265">        types.sort(Comparator.comparingInt(TypeInfo::dataType).thenComparing(TypeInfo::typeName));</span>
+<span class="fc" id="L266">        return List.copyOf(types);</span>
+    }
+
+    /**
+     * Type metadata entry for Flight SQL GetXdbcTypeInfo responses.
+     */
+<span class="fc" id="L272">    public record TypeInfo(String typeName, int dataType, Integer precision, String literalPrefix, String literalSuffix,</span>
+                            String createParams, int nullable, boolean caseSensitive, int searchable, boolean unsignedAttribute,
+                            boolean fixedPrecScale, boolean autoIncrement, String localTypeName, Integer minimumScale, Integer maximumScale,
+                            Integer sqlDataType, Integer sqlDatetimeSub, Integer numPrecRadix) {
+
+        /**
+         * Converts this entry to an array suitable for Arrow vector population.
+         *
+         * @return row values
+         */
+        public Object[] toRow() {
+<span class="fc" id="L283">            return new Object[]{</span>
+<span class="fc" id="L284">                    typeName, dataType, precision, literalPrefix, literalSuffix, createParams, nullable, caseSensitive,</span>
+<span class="fc" id="L285">                    searchable, unsignedAttribute, fixedPrecScale, autoIncrement, localTypeName, minimumScale, maximumScale,</span>
+                    sqlDataType, sqlDatetimeSub, numPrecRadix
+            };
+        }
+
+        /**
+         * Returns this entry as a map for serialization.
+         *
+         * @return map of column names to values
+         */
+        public Map&lt;String, Object&gt; toMap() {
+<span class="nc" id="L296">            Map&lt;String, Object&gt; result = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L297">            result.put(&quot;TYPE_NAME&quot;, this.typeName());</span>
+<span class="nc" id="L298">            result.put(&quot;DATA_TYPE&quot;, this.dataType());</span>
+<span class="nc" id="L299">            result.put(&quot;PRECISION&quot;, this.precision());</span>
+<span class="nc" id="L300">            result.put(&quot;LITERAL_PREFIX&quot;, this.literalPrefix());</span>
+<span class="nc" id="L301">            result.put(&quot;LITERAL_SUFFIX&quot;, this.literalSuffix());</span>
+<span class="nc" id="L302">            result.put(&quot;CREATE_PARAMS&quot;, this.createParams());</span>
+<span class="nc" id="L303">            result.put(&quot;NONULLS&quot;, this.nullable());</span>
+<span class="nc" id="L304">            result.put(&quot;CASE_SENSITIVE&quot;, this.caseSensitive());</span>
+<span class="nc" id="L305">            result.put(&quot;SEARCHABLE&quot;, this.searchable());</span>
+<span class="nc" id="L306">            result.put(&quot;UNSIGNED_ATTRIBUTE&quot;, this.unsignedAttribute());</span>
+<span class="nc" id="L307">            result.put(&quot;FIXED_PREC_SCALE&quot;, this.fixedPrecScale());</span>
+<span class="nc" id="L308">            result.put(&quot;AUTO_INCREMENT&quot;, this.autoIncrement());</span>
+<span class="nc" id="L309">            result.put(&quot;LOCAL_TYPE_NAME&quot;, this.localTypeName());</span>
+<span class="nc" id="L310">            result.put(&quot;MINIMUM_SCALE&quot;, this.minimumScale());</span>
+<span class="nc" id="L311">            result.put(&quot;MAXIMUM_SCALE&quot;, this.maximumScale());</span>
+<span class="nc" id="L312">            result.put(&quot;SQL_DATA_TYPE&quot;, this.sqlDataType());</span>
+<span class="nc" id="L313">            result.put(&quot;SQL_DATETIME_SUB&quot;, this.sqlDatetimeSub());</span>
+<span class="nc" id="L314">            result.put(&quot;NUM_PREC_RADIX&quot;, this.numPrecRadix());</span>
+<span class="nc" id="L315">            return result;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>
